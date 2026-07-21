@@ -1,0 +1,1356 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>人员进入监测</title>
+  <style>
+    :root {
+      --page: #eef1f4;
+      --card: #ffffff;
+      --border: #d5dae1;
+      --text: #20252d;
+      --muted: #667080;
+      --blue: #2563eb;
+      --green: #16a365;
+      --red: #dc3545;
+      --yellow: #ffd42a;
+      --monitor: #0b0d10;
+      --input: #ffffff;
+      --switch: #b8c0cb;
+      --dot: #a0a8b4;
+      color-scheme: light;
+    }
+
+    :root[data-theme="dark"] {
+      --page: #0c0e12;
+      --card: #171a21;
+      --border: #303640;
+      --text: #e8eaf0;
+      --muted: #aab2bf;
+      --input: #20242c;
+      --switch: #515866;
+      --dot: #626a78;
+      color-scheme: dark;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-width: 300px;
+      min-height: 100vh;
+      color: var(--text);
+      background: var(--page);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+        "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    button,
+    select,
+    input {
+      font: inherit;
+    }
+
+    .app {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      width: min(1180px, calc(100% - 24px));
+      min-height: 100vh;
+      margin: 0 auto;
+      padding: 12px 0;
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .topbar {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-height: 48px;
+      padding: 8px 12px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 17px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .connection {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--dot);
+    }
+
+    .dot.online {
+      background: var(--green);
+      box-shadow: 0 0 0 3px rgb(22 163 101 / 14%);
+    }
+
+    .dot.error {
+      background: var(--red);
+    }
+
+    .settings {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-left: auto;
+    }
+
+    .alert-settings {
+      display: contents;
+    }
+
+    .compact-toggle {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .compact-toggle input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+    }
+
+    .compact-toggle span {
+      display: inline-flex;
+      min-height: 32px;
+      align-items: center;
+      justify-content: center;
+      padding: 0 10px;
+      color: var(--muted);
+      background: var(--switch);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 700;
+      transition: 160ms ease;
+    }
+
+    .compact-toggle input:checked + span {
+      color: white;
+      background: var(--blue);
+      border-color: var(--blue);
+      box-shadow: 0 2px 8px rgb(37 99 235 / 22%);
+    }
+
+    .compact-toggle input:focus-visible + span {
+      outline: 2px solid var(--blue);
+      outline-offset: 2px;
+    }
+
+    select {
+      min-height: 32px;
+      max-width: 250px;
+      padding: 0 30px 0 9px;
+      color: var(--text);
+      background: var(--input);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+    }
+
+    .time-config {
+      position: relative;
+    }
+
+    .theme-button,
+    .time-config-button {
+      min-height: 32px;
+      padding: 0 12px;
+      color: var(--text);
+      background: var(--input);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .theme-button:hover,
+    .time-config-button:hover,
+    .time-config-button[aria-expanded="true"] {
+      border-color: var(--blue);
+    }
+
+    .time-config-menu {
+      position: absolute;
+      z-index: 50;
+      top: calc(100% + 8px);
+      right: 0;
+      display: grid;
+      width: 224px;
+      gap: 10px;
+      padding: 12px;
+      color: var(--text);
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 12px 28px rgb(0 0 0 / 18%);
+    }
+
+    .time-config-menu[hidden] {
+      display: none;
+    }
+
+    .time-config-field {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 96px;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .time-config-field select {
+      width: 96px;
+      max-width: none;
+    }
+
+    .monitor {
+      position: relative;
+      display: grid;
+      flex: 1;
+      min-height: 420px;
+      overflow: hidden;
+      place-items: center;
+      color: var(--text);
+      background: var(--page);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    .monitor-content {
+      width: min(600px, calc(100% - 40px));
+      text-align: center;
+    }
+
+    .monitor-content.hidden {
+      display: none;
+    }
+
+    .live-preview {
+      position: absolute;
+      z-index: 1;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: var(--monitor);
+    }
+
+    .live-preview.hidden {
+      visibility: hidden;
+    }
+
+    .monitor-icon {
+      display: grid;
+      width: 76px;
+      height: 76px;
+      margin: 0 auto 18px;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      place-items: center;
+      font-size: 34px;
+    }
+
+    .monitor h2 {
+      margin: 0 0 8px;
+      font-size: clamp(22px, 4vw, 34px);
+    }
+
+    .monitor p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+      white-space: pre-line;
+    }
+
+    .monitor.detecting .monitor-icon {
+      color: #86efac;
+      border-color: #168657;
+      box-shadow: 0 0 0 8px rgb(22 163 101 / 10%);
+    }
+
+    .monitor.person .monitor-icon {
+      color: #ffe176;
+      border-color: #d39f00;
+      box-shadow: 0 0 0 8px rgb(255 212 42 / 10%);
+    }
+
+    .statusbar {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      align-items: center;
+      gap: 8px;
+      min-height: 44px;
+      padding: 7px 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .status-item {
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .status-item:first-child {
+      text-align: left;
+    }
+
+    .status-item:last-child {
+      text-align: right;
+    }
+
+    .status-item strong {
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .privacy-note {
+      margin: -2px 4px 0;
+      color: var(--muted);
+      text-align: center;
+      font-size: 12px;
+    }
+
+    .alert-overlay {
+      position: fixed;
+      z-index: 1000;
+      inset: 0;
+      display: grid;
+      padding: 24px;
+      color: white;
+      background: rgb(5 8 12 / 96%);
+      place-items: center;
+    }
+
+    .alert-overlay.hidden {
+      display: none;
+    }
+
+    .alert-panel {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      width: min(920px, 100%);
+      height: min(760px, 100%);
+      text-align: center;
+    }
+
+    .alert-title {
+      margin: 0;
+      font-size: clamp(34px, 8vw, 88px);
+      font-weight: 900;
+      letter-spacing: 0.03em;
+    }
+
+    .alert-detail {
+      margin: 18px 0 0;
+      font-size: clamp(16px, 2.4vw, 25px);
+      font-weight: 700;
+    }
+
+    .intruder-image {
+      display: none;
+      max-width: 100%;
+      max-height: min(65vh, 600px);
+      margin-bottom: 18px;
+      object-fit: contain;
+      border: 4px solid #ff4152;
+      border-radius: 10px;
+      box-shadow: 0 20px 80px rgb(0 0 0 / 50%);
+    }
+
+    .alert-live-preview {
+      display: none;
+      width: 100%;
+      max-height: min(65vh, 600px);
+      margin-bottom: 18px;
+      object-fit: contain;
+      background: #0b0d10;
+      border: 4px solid white;
+      border-radius: 10px;
+      box-shadow: 0 20px 80px rgb(0 0 0 / 50%);
+    }
+
+    .mode-zoom .intruder-image,
+    .mode-zoom-red .intruder-image {
+      display: block;
+    }
+
+    .mode-zoom .alert-title,
+    .mode-zoom-red .alert-title,
+    .mode-live-red .alert-title {
+      font-size: clamp(28px, 5vw, 54px);
+    }
+
+    .mode-red,
+    .mode-zoom-red,
+    .mode-live-red {
+      color: white;
+      background: #e00018;
+    }
+
+    .mode-live-red .alert-live-preview {
+      display: block;
+    }
+
+    .mode-zoom-red .intruder-image {
+      border-color: white;
+    }
+
+    .mode-yellow {
+      color: #201a00;
+      background: var(--yellow);
+    }
+
+    .alert-actions {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      margin-top: 30px;
+    }
+
+    .exit-button {
+      min-width: 180px;
+      min-height: 48px;
+      padding: 0 20px;
+      color: #15181d;
+      background: white;
+      border: 0;
+      border-radius: 7px;
+      box-shadow: 0 4px 16px rgb(0 0 0 / 25%);
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    .exit-button:hover {
+      transform: translateY(-1px);
+    }
+
+    .countdown {
+      font-size: 14px;
+      font-weight: 600;
+      opacity: 0.82;
+    }
+
+    @media (max-width: 760px) {
+      .app {
+        width: min(100% - 16px, 1180px);
+        padding: 8px 0;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .settings {
+        width: 100%;
+        margin-left: 0;
+        flex-wrap: wrap;
+      }
+
+      select {
+        min-width: 0;
+        flex: 1;
+      }
+
+      .monitor {
+        min-height: 360px;
+      }
+
+      .statusbar {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+    }
+
+    @media (max-width: 760px) and (orientation: portrait) {
+      .topbar {
+        display: grid;
+        grid-template-areas:
+          "title connection time theme"
+          "alert-settings alert-settings alert-settings alert-settings";
+        grid-template-columns: auto minmax(0, 1fr) 76px 76px;
+        align-items: center;
+        gap: 8px 6px;
+      }
+
+      .title {
+        grid-area: title;
+        font-size: 15px;
+      }
+
+      .connection {
+        grid-area: connection;
+        min-width: 0;
+        font-size: 12px;
+      }
+
+      .connection span:last-child {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .settings {
+        display: contents;
+      }
+
+      .alert-settings {
+        display: grid;
+        grid-area: alert-settings;
+        width: 100%;
+        min-width: 0;
+        grid-template-areas: "alert continuous preview method";
+        grid-template-columns: auto auto auto minmax(0, 1fr);
+        align-items: center;
+        gap: 4px;
+      }
+
+      .alert-switch {
+        grid-area: alert;
+        justify-self: start;
+      }
+
+      .continuous-switch {
+        grid-area: continuous;
+        justify-self: start;
+      }
+
+      .preview-switch {
+        grid-area: preview;
+        min-width: 0;
+        justify-self: start;
+      }
+
+      #alertMethod {
+        grid-area: method;
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+        flex: 1 1 auto;
+        padding: 0 22px 0 6px;
+        font-size: 12px;
+      }
+
+      .time-config {
+        grid-area: time;
+        min-width: 0;
+      }
+
+      .time-config-button,
+      .theme-button {
+        width: 100%;
+        min-width: 0;
+        padding: 0 6px;
+      }
+
+      .theme-button {
+        grid-area: theme;
+      }
+
+      .time-config-menu {
+        width: 220px;
+      }
+
+      .compact-toggle span,
+      .theme-button,
+      .time-config-button {
+        font-size: 12px;
+      }
+
+      .compact-toggle span {
+        min-height: 30px;
+        padding: 0 8px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="topbar card">
+      <h1 class="title">人员进入监测</h1>
+      <div class="connection">
+        <span id="connectionDot" class="dot"></span>
+        <span id="connectionText">正在连接本地检测程序…</span>
+      </div>
+
+      <div class="settings">
+        <div class="alert-settings">
+          <label class="compact-toggle alert-switch">
+            <input id="alertEnabled" type="checkbox" checked>
+            <span>启用警告</span>
+          </label>
+          <label class="compact-toggle continuous-switch">
+            <input id="continuousDetectionEnabled" type="checkbox" checked>
+            <span>连续检测</span>
+          </label>
+          <label class="compact-toggle preview-switch">
+            <input id="livePreviewEnabled" type="checkbox">
+            <span>实时预览</span>
+          </label>
+          <select id="alertMethod" aria-label="提示方法">
+            <option value="red" selected>全屏幕变为红色</option>
+            <option value="yellow">全屏幕变为黄色</option>
+            <option value="zoom">放大进入镜头的人物</option>
+            <option value="zoom-red">全屏显示红色并放大进入人物</option>
+            <option value="live-red">全屏显示红色并进行实时预览</option>
+          </select>
+        </div>
+        <div id="timeConfig" class="time-config">
+          <button id="timeConfigToggle" class="time-config-button"
+            type="button" aria-expanded="false"
+            aria-controls="timeConfigMenu">时间配置</button>
+          <div id="timeConfigMenu" class="time-config-menu"
+            aria-label="时间配置" hidden>
+            <label class="time-config-field">
+              <span>告警时间</span>
+              <select id="alertConfirmSeconds"
+                aria-label="告警确认时间"
+                title="人物持续出现多久后触发警告">
+                <option value="0">0s</option>
+                <option value="0.2">0.2s</option>
+                <option value="0.5">0.5s</option>
+                <option value="1" selected>1s</option>
+                <option value="2">2s</option>
+              </select>
+            </label>
+            <label class="time-config-field">
+              <span>自动退出</span>
+              <select id="alertTimeoutSeconds"
+                aria-label="自动恢复延迟时间"
+                title="警告自动退出并继续检测的延迟时间；∞ 表示仅手动退出">
+                <option value="5">5s</option>
+                <option value="10" selected>10s</option>
+                <option value="15">15s</option>
+                <option value="30">30s</option>
+                <option value="60">60s</option>
+                <option value="0">∞</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <button id="themeToggle" class="theme-button" type="button"
+          aria-pressed="false">黑色主题</button>
+      </div>
+    </section>
+
+    <section id="monitor" class="monitor">
+      <img id="livePreviewImage" class="live-preview hidden" alt="实时检测画面">
+      <div id="monitorContent" class="monitor-content">
+        <div id="monitorIcon" class="monitor-icon">⌁</div>
+        <h2 id="monitorTitle">等待客户端服务器检测启动</h2>
+        <p id="monitorDetail">请在客户端服务器上启动“开始检测”。
+网页不会开启占用本机摄像头。</p>
+      </div>
+    </section>
+
+    <section class="statusbar card">
+      <div class="status-item">人数：<strong id="peopleCount">—</strong></div>
+      <div class="status-item">持续：<strong id="presenceTime">—</strong></div>
+      <div class="status-item">FPS：<strong id="fpsValue">—</strong></div>
+    </section>
+
+    <p class="privacy-note">
+      作者：H-Knight  - 网页不会打开本地摄像头，实时预览由客户端服务器检测线程按需提供。
+    </p>
+  </main>
+
+  <section id="alertOverlay" class="alert-overlay hidden" role="alertdialog"
+    aria-modal="true" aria-labelledby="alertTitle">
+    <div class="alert-panel">
+      <img id="alertLivePreview" class="alert-live-preview"
+        alt="警告实时检测画面">
+      <img id="intruderImage" class="intruder-image" alt="检测到的人物">
+      <h2 id="alertTitle" class="alert-title">⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️</h2>
+      <p id="alertDetail" class="alert-detail">检测到有人进入监控区域</p>
+      <div class="alert-actions">
+        <button id="exitAlert" class="exit-button" type="button">退出警告</button>
+        <span id="countdown" class="countdown">10 秒后自动退出并继续检测</span>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    "use strict";
+
+    const POLL_INTERVAL_MS = 300;
+    const DEFAULT_ALERT_CONFIRM_SECONDS = 0.5;
+    const ALERT_CONFIRM_OPTIONS_SECONDS = [0, 0.2, 0.5, 1, 2];
+    const DEFAULT_ALERT_TIMEOUT_SECONDS = 10;
+    const ALERT_TIMEOUT_OPTIONS_SECONDS = [0, 5, 10, 15, 30, 60];
+    const PREVIEW_RECONNECT_DELAY_MS = 700;
+    const PREVIEW_READY_CHECK_MS = 100;
+    const alertEnabled = document.querySelector("#alertEnabled");
+    const continuousDetectionEnabled = document.querySelector(
+      "#continuousDetectionEnabled"
+    );
+    const livePreviewEnabled = document.querySelector("#livePreviewEnabled");
+    const alertMethod = document.querySelector("#alertMethod");
+    const alertConfirmSeconds = document.querySelector(
+      "#alertConfirmSeconds"
+    );
+    const alertTimeoutSeconds = document.querySelector("#alertTimeoutSeconds");
+    const timeConfig = document.querySelector("#timeConfig");
+    const timeConfigToggle = document.querySelector("#timeConfigToggle");
+    const timeConfigMenu = document.querySelector("#timeConfigMenu");
+    const themeToggle = document.querySelector("#themeToggle");
+    const connectionDot = document.querySelector("#connectionDot");
+    const connectionText = document.querySelector("#connectionText");
+    const monitor = document.querySelector("#monitor");
+    const monitorIcon = document.querySelector("#monitorIcon");
+    const monitorTitle = document.querySelector("#monitorTitle");
+    const monitorDetail = document.querySelector("#monitorDetail");
+    const monitorContent = document.querySelector("#monitorContent");
+    const livePreviewImage = document.querySelector("#livePreviewImage");
+    const peopleCount = document.querySelector("#peopleCount");
+    const presenceTime = document.querySelector("#presenceTime");
+    const fpsValue = document.querySelector("#fpsValue");
+    const alertOverlay = document.querySelector("#alertOverlay");
+    const alertTitle = document.querySelector("#alertTitle");
+    const alertDetail = document.querySelector("#alertDetail");
+    const alertLivePreview = document.querySelector("#alertLivePreview");
+    const intruderImage = document.querySelector("#intruderImage");
+    const exitAlert = document.querySelector("#exitAlert");
+    const countdown = document.querySelector("#countdown");
+
+    let currentInstanceId = "";
+    let lastHandledEventId = 0;
+    let alertIsOpen = false;
+    let alertTimeout = null;
+    let countdownInterval = null;
+    let polling = false;
+    let previewReconnectTimer = null;
+    let previewReadyTimer = null;
+    let previewGeneration = 0;
+    let alertPreviewReconnectTimer = null;
+    let alertPreviewGeneration = 0;
+    let alertRearmNotBefore = 0;
+    let alertEnabledNotBefore = 0;
+    let requiredEventInstanceId = "";
+    let requiredIntrusionEventId = 0;
+    let latestConfirmSeconds = DEFAULT_ALERT_CONFIRM_SECONDS;
+    let latestPersonPresent = false;
+    let latestPresenceSeconds = 0;
+    let presenceDisplayStartedAt = null;
+    let waitForPersonToLeave = false;
+
+    alertEnabled.checked = localStorage.getItem("cameraAlertEnabled") !== "false";
+    continuousDetectionEnabled.checked =
+      localStorage.getItem("cameraContinuousDetectionEnabled") !== "false";
+    livePreviewEnabled.checked =
+      localStorage.getItem("cameraLivePreviewEnabled") === "true";
+    const savedAlertMethod = localStorage.getItem("cameraAlertMethod");
+    const availableAlertMethods = [
+      "zoom",
+      "red",
+      "yellow",
+      "zoom-red",
+      "live-red",
+    ];
+    alertMethod.value = availableAlertMethods.includes(savedAlertMethod)
+      ? savedAlertMethod
+      : "red";
+    const savedAlertConfirmValue = localStorage.getItem(
+      "cameraAlertConfirmSeconds"
+    );
+    const savedAlertConfirmSeconds =
+      savedAlertConfirmValue === null
+        ? Number.NaN
+        : Number(savedAlertConfirmValue);
+    alertConfirmSeconds.value = String(
+      ALERT_CONFIRM_OPTIONS_SECONDS.includes(savedAlertConfirmSeconds)
+        ? savedAlertConfirmSeconds
+        : DEFAULT_ALERT_CONFIRM_SECONDS
+    );
+    latestConfirmSeconds = Number(alertConfirmSeconds.value);
+    const savedAlertTimeoutValue = localStorage.getItem(
+      "cameraAlertTimeoutSeconds"
+    );
+    const savedAlertTimeoutSeconds =
+      savedAlertTimeoutValue === null
+        ? Number.NaN
+        : Number(savedAlertTimeoutValue);
+    alertTimeoutSeconds.value = String(
+      ALERT_TIMEOUT_OPTIONS_SECONDS.includes(savedAlertTimeoutSeconds)
+        ? savedAlertTimeoutSeconds
+        : DEFAULT_ALERT_TIMEOUT_SECONDS
+    );
+    const savedTheme = localStorage.getItem("cameraWebTheme");
+    applyWebTheme(savedTheme === "dark" ? "dark" : "light");
+
+    alertEnabled.addEventListener("change", () => {
+      localStorage.setItem("cameraAlertEnabled", String(alertEnabled.checked));
+      if (!alertEnabled.checked) {
+        closeAlert(false);
+        alertRearmNotBefore = 0;
+        alertEnabledNotBefore = 0;
+        requiredEventInstanceId = "";
+        requiredIntrusionEventId = 0;
+        presenceDisplayStartedAt = null;
+        waitForPersonToLeave = false;
+        presenceTime.textContent = "—";
+      } else {
+        restartAlertDetectionFromNow();
+      }
+    });
+
+    continuousDetectionEnabled.addEventListener("change", () => {
+      localStorage.setItem(
+        "cameraContinuousDetectionEnabled",
+        String(continuousDetectionEnabled.checked)
+      );
+      alertRearmNotBefore = 0;
+      if (continuousDetectionEnabled.checked) {
+        waitForPersonToLeave = false;
+        startContinuousRearm();
+      } else if (latestPersonPresent && !alertIsOpen) {
+        waitForPersonToLeave = true;
+      }
+    });
+
+    alertMethod.addEventListener("change", () => {
+      localStorage.setItem("cameraAlertMethod", alertMethod.value);
+    });
+
+    alertConfirmSeconds.addEventListener("change", () => {
+      latestConfirmSeconds = selectedAlertConfirmSeconds();
+      localStorage.setItem(
+        "cameraAlertConfirmSeconds",
+        alertConfirmSeconds.value
+      );
+      requiredEventInstanceId = "";
+      requiredIntrusionEventId = 0;
+      const now = Date.now();
+      alertEnabledNotBefore = alertEnabled.checked
+        ? now + latestConfirmSeconds * 1000
+        : 0;
+      alertRearmNotBefore = latestPersonPresent
+        ? alertEnabledNotBefore
+        : 0;
+      void requestAlertRearm();
+    });
+
+    alertTimeoutSeconds.addEventListener("change", () => {
+      localStorage.setItem(
+        "cameraAlertTimeoutSeconds",
+        alertTimeoutSeconds.value
+      );
+    });
+
+    timeConfigToggle.addEventListener("click", () => {
+      setTimeConfigOpen(timeConfigMenu.hidden);
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!timeConfig.contains(event.target)) {
+        setTimeConfigOpen(false);
+      }
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !timeConfigMenu.hidden) {
+        setTimeConfigOpen(false);
+        timeConfigToggle.focus();
+      }
+    });
+
+    livePreviewEnabled.addEventListener("change", () => {
+      localStorage.setItem(
+        "cameraLivePreviewEnabled",
+        String(livePreviewEnabled.checked)
+      );
+      setLivePreview(livePreviewEnabled.checked);
+    });
+
+    themeToggle.addEventListener("click", () => {
+      const nextTheme =
+        document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+      localStorage.setItem("cameraWebTheme", nextTheme);
+      applyWebTheme(nextTheme);
+    });
+
+    exitAlert.addEventListener("click", () => closeAlert());
+
+    function applyWebTheme(theme) {
+      const darkMode = theme === "dark";
+      document.documentElement.dataset.theme = darkMode ? "dark" : "light";
+      themeToggle.textContent = darkMode ? "浅色主题" : "黑色主题";
+      themeToggle.setAttribute("aria-pressed", String(darkMode));
+    }
+
+    function setTimeConfigOpen(open) {
+      timeConfigMenu.hidden = !open;
+      timeConfigToggle.setAttribute("aria-expanded", String(open));
+    }
+
+    function setConnection(state, text) {
+      connectionDot.className = `dot ${state}`;
+      connectionText.textContent = text;
+    }
+
+    function handledStorageKey() {
+      return `cameraHandledEvent:${currentInstanceId}`;
+    }
+
+    function selectedAlertConfirmSeconds() {
+      const selectedSeconds = Number(alertConfirmSeconds.value);
+      return ALERT_CONFIRM_OPTIONS_SECONDS.includes(selectedSeconds)
+        ? selectedSeconds
+        : DEFAULT_ALERT_CONFIRM_SECONDS;
+    }
+
+    function setLivePreview(enabled) {
+      previewGeneration += 1;
+      const generation = previewGeneration;
+      if (previewReconnectTimer !== null) {
+        window.clearTimeout(previewReconnectTimer);
+        previewReconnectTimer = null;
+      }
+      if (previewReadyTimer !== null) {
+        window.clearTimeout(previewReadyTimer);
+        previewReadyTimer = null;
+      }
+
+      livePreviewImage.onload = null;
+      livePreviewImage.onerror = null;
+      livePreviewImage.removeAttribute("src");
+
+      if (!enabled) {
+        livePreviewImage.classList.add("hidden");
+        monitorContent.classList.remove("hidden");
+        return;
+      }
+
+      openLivePreviewStream(generation);
+    }
+
+    function openLivePreviewStream(generation) {
+      if (
+        !livePreviewEnabled.checked ||
+        generation !== previewGeneration
+      ) {
+        return;
+      }
+
+      livePreviewImage.onload = null;
+      livePreviewImage.onerror = null;
+      livePreviewImage.removeAttribute("src");
+      livePreviewImage.classList.add("hidden");
+      monitorContent.classList.remove("hidden");
+
+      livePreviewImage.onerror = () => {
+        if (generation !== previewGeneration) {
+          return;
+        }
+        livePreviewImage.classList.add("hidden");
+        monitorContent.classList.remove("hidden");
+        if (previewReadyTimer !== null) {
+          window.clearTimeout(previewReadyTimer);
+          previewReadyTimer = null;
+        }
+        // 局域网服务短暂重启时自动重新建立 MJPEG 长连接。
+        previewReconnectTimer = window.setTimeout(
+          () => openLivePreviewStream(generation),
+          PREVIEW_RECONNECT_DELAY_MS
+        );
+      };
+      livePreviewImage.src =
+        `/api/preview.mjpg?time=${Date.now()}&generation=${generation}`;
+      checkLivePreviewReady(generation);
+    }
+
+    function checkLivePreviewReady(generation) {
+      if (
+        !livePreviewEnabled.checked ||
+        generation !== previewGeneration
+      ) {
+        return;
+      }
+
+      // MJPEG 响应不会结束，因此通过 naturalWidth 判断首帧是否已经到达。
+      if (livePreviewImage.naturalWidth > 0) {
+        livePreviewImage.classList.remove("hidden");
+        monitorContent.classList.add("hidden");
+      } else {
+        livePreviewImage.classList.add("hidden");
+        monitorContent.classList.remove("hidden");
+      }
+      previewReadyTimer = window.setTimeout(
+        () => checkLivePreviewReady(generation),
+        PREVIEW_READY_CHECK_MS
+      );
+    }
+
+    function setAlertLivePreview(enabled) {
+      alertPreviewGeneration += 1;
+      const generation = alertPreviewGeneration;
+      if (alertPreviewReconnectTimer !== null) {
+        window.clearTimeout(alertPreviewReconnectTimer);
+        alertPreviewReconnectTimer = null;
+      }
+
+      alertLivePreview.onerror = null;
+      alertLivePreview.removeAttribute("src");
+      if (enabled) {
+        openAlertLivePreviewStream(generation);
+      }
+    }
+
+    function openAlertLivePreviewStream(generation) {
+      if (
+        !alertIsOpen ||
+        alertMethod.value !== "live-red" ||
+        generation !== alertPreviewGeneration
+      ) {
+        return;
+      }
+
+      alertLivePreview.onerror = null;
+      alertLivePreview.removeAttribute("src");
+      alertLivePreview.onerror = () => {
+        if (
+          !alertIsOpen ||
+          generation !== alertPreviewGeneration
+        ) {
+          return;
+        }
+        alertLivePreview.removeAttribute("src");
+        // 告警期间局域网服务短暂重启时，自动恢复实时预览连接。
+        alertPreviewReconnectTimer = window.setTimeout(
+          () => openAlertLivePreviewStream(generation),
+          PREVIEW_RECONNECT_DELAY_MS
+        );
+      };
+      alertLivePreview.src =
+        `/api/preview.mjpg?time=${Date.now()}&alertGeneration=${generation}`;
+    }
+
+    function renderStatus(data) {
+      setConnection("online", "已连接");
+      latestPersonPresent = Boolean(data.person_present);
+      latestPresenceSeconds = Number.isFinite(data.presence_seconds)
+        ? Math.max(data.presence_seconds, 0)
+        : 0;
+      if (!latestPersonPresent) {
+        waitForPersonToLeave = false;
+        alertRearmNotBefore = 0;
+        presenceDisplayStartedAt = null;
+      } else if (
+        alertEnabled.checked &&
+        presenceDisplayStartedAt === null
+      ) {
+        // 页面首次连接时沿用后端累计值；开关重新开启时则使用新的当前时间。
+        presenceDisplayStartedAt =
+          Date.now() - latestPresenceSeconds * 1000;
+      }
+      peopleCount.textContent = data.detection_running ? data.people_count : "—";
+      fpsValue.textContent = data.detection_running ? data.fps.toFixed(1) : "—";
+      const displayedPresenceSeconds =
+        presenceDisplayStartedAt === null
+          ? 0
+          : Math.max((Date.now() - presenceDisplayStartedAt) / 1000, 0);
+      presenceTime.textContent =
+        alertEnabled.checked && data.person_present
+          ? `${displayedPresenceSeconds.toFixed(1)} s`
+          : "—";
+
+      monitor.classList.remove("detecting", "person");
+      if (!data.detection_running) {
+        monitorIcon.textContent = "⌁";
+        monitorTitle.textContent = "等待服务器检测启动";
+        monitorDetail.textContent =
+          "请在服务器上点击“开始检测”。\n网页不会开启占用本机摄像头。";
+        return;
+      }
+
+      if (data.person_present) {
+        monitor.classList.add("person");
+        monitorIcon.textContent = "!";
+        monitorTitle.textContent = "检测到人物";
+        const rearmRemainingSeconds = Math.max(
+          (alertRearmNotBefore - Date.now()) / 1000,
+          0
+        );
+        if (!alertEnabled.checked) {
+          monitorDetail.textContent =
+            "警告已关闭，持续时间已清除";
+        } else if (
+          !continuousDetectionEnabled.checked &&
+          waitForPersonToLeave
+        ) {
+          monitorDetail.textContent =
+            "连续检测已关闭，等待人物离开后重新布防";
+        } else if (rearmRemainingSeconds > 0) {
+          const rearmElapsedSeconds = Math.max(
+            latestConfirmSeconds - rearmRemainingSeconds,
+            0
+          );
+          monitorDetail.textContent =
+            `正在重新确认告警 ${rearmElapsedSeconds.toFixed(1)} / ` +
+            `${latestConfirmSeconds.toFixed(1)} 秒`;
+        } else if (data.presence_seconds < latestConfirmSeconds) {
+          monitorDetail.textContent =
+            `正在确认持续时间 ${data.presence_seconds.toFixed(1)} / ` +
+            `${latestConfirmSeconds.toFixed(1)} 秒`;
+        } else {
+          monitorDetail.textContent =
+            `当前检测到 ${data.people_count} 人，警告触发`;
+        }
+        return;
+      }
+
+      monitor.classList.add("detecting");
+      monitorIcon.textContent = "✓";
+      monitorTitle.textContent = "检测运行中";
+      monitorDetail.textContent = "当前未检测到人物，正在持续监测";
+    }
+
+    function updateInstance(data) {
+      if (currentInstanceId === data.instance_id) {
+        return;
+      }
+
+      currentInstanceId = data.instance_id;
+      waitForPersonToLeave = false;
+      alertRearmNotBefore = 0;
+      presenceDisplayStartedAt = null;
+      lastHandledEventId = Number(
+        sessionStorage.getItem(handledStorageKey()) || "0"
+      );
+      closeAlert(false);
+    }
+
+    function maybeOpenAlert(data) {
+      if (
+        !alertEnabled.checked ||
+        alertIsOpen ||
+        !data.person_present ||
+        data.presence_seconds < latestConfirmSeconds ||
+        Date.now() < alertEnabledNotBefore ||
+        Date.now() < alertRearmNotBefore ||
+        data.intrusion_event_id <= lastHandledEventId
+      ) {
+        return;
+      }
+
+      if (!continuousDetectionEnabled.checked) {
+        if (waitForPersonToLeave) {
+          return;
+        }
+      }
+
+      if (
+        data.instance_id === requiredEventInstanceId &&
+        data.intrusion_event_id < requiredIntrusionEventId
+      ) {
+        return;
+      }
+
+      if (data.intrusion_event_id > lastHandledEventId) {
+        lastHandledEventId = data.intrusion_event_id;
+        sessionStorage.setItem(
+          handledStorageKey(),
+          String(lastHandledEventId)
+        );
+      }
+      requiredEventInstanceId = "";
+      requiredIntrusionEventId = 0;
+      openAlert(data);
+    }
+
+    function openAlert(data) {
+      const method = alertMethod.value;
+      alertIsOpen = true;
+      alertOverlay.className = `alert-overlay mode-${method}`;
+      alertTitle.textContent = "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️";
+      alertDetail.textContent =
+        `检测到 ${data.intrusion_people_count || data.people_count} 人进入监控区域`;
+
+      setAlertLivePreview(method === "live-red");
+      intruderImage.removeAttribute("src");
+      if (
+        (method === "zoom" || method === "zoom-red") &&
+        data.intrusion_image_available
+      ) {
+        intruderImage.src =
+          `/api/intruder.jpg?event=${encodeURIComponent(data.intrusion_event_id)}`;
+      }
+
+      const selectedTimeoutSeconds = Number(alertTimeoutSeconds.value);
+      const timeoutSeconds = ALERT_TIMEOUT_OPTIONS_SECONDS.includes(
+        selectedTimeoutSeconds
+      )
+        ? selectedTimeoutSeconds
+        : DEFAULT_ALERT_TIMEOUT_SECONDS;
+      if (timeoutSeconds === 0) {
+        countdown.textContent = "点击以手动退出";
+      } else {
+        const alertTimeoutMs = timeoutSeconds * 1000;
+        const deadline = Date.now() + alertTimeoutMs;
+        updateCountdown(deadline);
+        countdownInterval = window.setInterval(
+          () => updateCountdown(deadline),
+          250
+        );
+        alertTimeout = window.setTimeout(closeAlert, alertTimeoutMs);
+      }
+      exitAlert.focus();
+    }
+
+    function updateCountdown(deadline) {
+      const seconds = Math.max(Math.ceil((deadline - Date.now()) / 1000), 0);
+      countdown.textContent = `${seconds} 秒后自动退出并继续检测`;
+    }
+
+    async function requestAlertRearm() {
+      try {
+        const response = await fetch(
+          `/api/rearm-alert?confirm_seconds=${encodeURIComponent(
+            selectedAlertConfirmSeconds()
+          )}`,
+          {
+            method: "POST",
+            cache: "no-store",
+          }
+        );
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const result = await response.json();
+        if (
+          result.rearmed &&
+          typeof result.instance_id === "string" &&
+          Number.isFinite(result.event_id)
+        ) {
+          // 必须等待本次重新布防之后产生的新事件，不能复用旧告警。
+          requiredEventInstanceId = result.instance_id;
+          requiredIntrusionEventId = result.event_id + 1;
+        }
+        // 重新读取状态；网页持续时间可按“启用警告”开关单独重置。
+        await pollStatus();
+      } catch (_error) {
+        // 常规状态轮询会继续尝试连接，无需因重新布防失败阻塞界面。
+      }
+    }
+
+    function restartAlertDetectionFromNow() {
+      const now = Date.now();
+      presenceDisplayStartedAt = latestPersonPresent
+        ? now
+        : null;
+      waitForPersonToLeave = false;
+      requiredEventInstanceId = "";
+      requiredIntrusionEventId = 0;
+      // 这个截止时间不受实例状态同步影响，确保点击后完整等待确认时间。
+      alertEnabledNotBefore = now + latestConfirmSeconds * 1000;
+      alertRearmNotBefore = latestPersonPresent
+        ? alertEnabledNotBefore
+        : 0;
+      if (latestPersonPresent) {
+        void requestAlertRearm();
+      }
+    }
+
+    function startContinuousRearm() {
+      if (
+        !continuousDetectionEnabled.checked ||
+        !alertEnabled.checked ||
+        alertIsOpen ||
+        !latestPersonPresent
+      ) {
+        return;
+      }
+      waitForPersonToLeave = false;
+      alertRearmNotBefore =
+        Date.now() + latestConfirmSeconds * 1000;
+      void requestAlertRearm();
+    }
+
+    function closeAlert(rearmDetection = true) {
+      const wasOpen = alertIsOpen;
+      alertIsOpen = false;
+      setAlertLivePreview(false);
+      alertOverlay.className = "alert-overlay hidden";
+      intruderImage.removeAttribute("src");
+      if (alertTimeout !== null) {
+        window.clearTimeout(alertTimeout);
+        alertTimeout = null;
+      }
+      if (countdownInterval !== null) {
+        window.clearInterval(countdownInterval);
+        countdownInterval = null;
+      }
+      if (wasOpen && rearmDetection && alertEnabled.checked) {
+        if (continuousDetectionEnabled.checked) {
+          startContinuousRearm();
+        } else {
+          alertRearmNotBefore = 0;
+          waitForPersonToLeave = latestPersonPresent;
+        }
+      }
+    }
+
+    async function pollStatus() {
+      if (polling) {
+        return;
+      }
+      polling = true;
+      try {
+        const response = await fetch("/api/status", { cache: "no-store" });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        updateInstance(data);
+        renderStatus(data);
+        maybeOpenAlert(data);
+      } catch (_error) {
+        setConnection("error", "连接中断");
+      } finally {
+        polling = false;
+      }
+    }
+
+    void requestAlertRearm();
+    window.setInterval(pollStatus, POLL_INTERVAL_MS);
+    if (livePreviewEnabled.checked) {
+      setLivePreview(true);
+    }
+  </script>
+</body>
+</html>
