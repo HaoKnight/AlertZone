@@ -1255,10 +1255,10 @@ PlatformCheckBox = FramedCheckBox if sys.platform == "win32" else QCheckBox
 
 # ---------- 始终向下并对齐的选择框 ----------
 class AlignedComboBox(QComboBox):
-    """让选项列表与选择框等宽，并固定显示在正下方。"""
+    """让选项列表完整容纳文字，并固定显示在选择框正下方。"""
 
     def showPopup(self) -> None:
-        """先显示列表，再在下一次事件循环中修正位置和宽度。"""
+        """先显示列表，再在下一次事件循环中修正位置与内容宽度。"""
         super().showPopup()
         QTimer.singleShot(0, self._align_popup)
 
@@ -1267,8 +1267,16 @@ class AlignedComboBox(QComboBox):
         if popup is None:
             return
 
-        # 弹出窗口外框与选择框同宽，左边缘也保持对齐。
-        popup.resize(self.width(), popup.height())
+        # 下拉列表还需容纳选中标记和内部边距，因此按最长文字额外扩宽。
+        longest_text_width = max(
+            (
+                self.fontMetrics().horizontalAdvance(self.itemText(index))
+                for index in range(self.count())
+            ),
+            default=0,
+        )
+        popup_width = max(self.width(), longest_text_width + 44)
+        popup.resize(popup_width, popup.height())
         below_left = self.mapToGlobal(QPoint(0, self.height()))
         popup.move(below_left)
 
