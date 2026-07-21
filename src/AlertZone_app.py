@@ -1200,8 +1200,8 @@ class FramedCheckBox(QCheckBox):
         # 隐藏系统自带的指示图形，但保留固定空间供自绘内容使用。
         self.setStyleSheet("""
             QCheckBox::indicator {
-                width: 16px;
-                height: 16px;
+                width: 18px;
+                height: 18px;
                 background: transparent;
                 border: none;
             }
@@ -1216,14 +1216,14 @@ class FramedCheckBox(QCheckBox):
             QStyle.SubElement.SE_CheckBoxIndicator,
             option,
             self,
-        ).adjusted(0, 0, -1, -1)
+        ).adjusted(1, 1, -2, -2)
 
         border_color = QColor(
             "#ffffff" if self.property("darkTheme") else "#000000"
         )
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(border_color, 1))
+        painter.setPen(QPen(border_color, 2))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(indicator_rect, 3, 3)
 
@@ -2753,7 +2753,8 @@ class CameraWindow(QMainWindow):
         if self.worker is not source_worker or not source_worker.isRunning():
             return
 
-        self.status_label.setText("正在运行检测")
+        self.status_label.setText("运行中")
+        self.status_label.setFixedWidth(self.status_label.sizeHint().width())
         self.running_indicator.show()
         self._runtime_info_text = text
         self._show_runtime_info = True
@@ -2765,6 +2766,8 @@ class CameraWindow(QMainWindow):
         self._runtime_info_text = ""
         self._show_runtime_info = False
         self.refresh_primary_info()
+        self.status_label.setMinimumWidth(0)
+        self.status_label.setMaximumWidth(16777215)
         self.running_indicator.hide()
 
     def show_worker_error(self, message: str) -> None:
