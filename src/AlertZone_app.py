@@ -1274,9 +1274,89 @@ class AlignedComboBox(QComboBox):
 
 # ---------- 可点击的信息标签 ----------
 class ClickableLabel(QLabel):
-    """单击时发出信号，用于切换底栏左侧的信息。"""
+    """可单击，并在文字过长时自动左右往返滚动。"""
 
     clicked = Signal()
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._scroll_offset = 0
+        self._scroll_direction = 1
+        self._scroll_pause_ticks = 20
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setInterval(30)
+        self._scroll_timer.timeout.connect(self._advance_scroll)
+        self._refresh_scroll_state()
+
+    def setText(self, text: str) -> None:
+        super().setText(text)
+        if hasattr(self, "_scroll_timer"):
+            self._scroll_offset = 0
+            self._scroll_direction = 1
+            self._scroll_pause_ticks = 20
+            self._refresh_scroll_state()
+
+    def _maximum_scroll_offset(self) -> int:
+        text_width = self.fontMetrics().horizontalAdvance(self.text())
+        return max(text_width - self.contentsRect().width(), 0)
+
+    def _refresh_scroll_state(self) -> None:
+        if self._maximum_scroll_offset() > 0:
+            self._scroll_timer.start()
+        else:
+            self._scroll_timer.stop()
+            self._scroll_offset = 0
+        self.update()
+
+    def _advance_scroll(self) -> None:
+        maximum_offset = self._maximum_scroll_offset()
+        if maximum_offset <= 0:
+            self._refresh_scroll_state()
+            return
+
+        if self._scroll_pause_ticks > 0:
+            self._scroll_pause_ticks -= 1
+            return
+
+        self._scroll_offset += self._scroll_direction
+        if self._scroll_offset >= maximum_offset:
+            self._scroll_offset = maximum_offset
+            self._scroll_direction = -1
+            self._scroll_pause_ticks = 20
+        elif self._scroll_offset <= 0:
+            self._scroll_offset = 0
+            self._scroll_direction = 1
+            self._scroll_pause_ticks = 20
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        if self._maximum_scroll_offset() <= 0:
+            super().paintEvent(event)
+            return
+
+        painter = QPainter(self)
+        painter.setClipRect(self.contentsRect())
+        painter.setPen(self.palette().color(self.foregroundRole()))
+        painter.setFont(self.font())
+        metrics = self.fontMetrics()
+        baseline = (
+            self.contentsRect().top()
+            + (self.contentsRect().height() - metrics.height()) // 2
+            + metrics.ascent()
+        )
+        painter.drawText(
+            self.contentsRect().left() - self._scroll_offset,
+            baseline,
+            self.text(),
+        )
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._scroll_offset = min(
+            self._scroll_offset,
+            self._maximum_scroll_offset(),
+        )
+        self._refresh_scroll_state()
 
     def mouseReleaseEvent(self, event: Any) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
