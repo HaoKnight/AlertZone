@@ -1695,7 +1695,7 @@ class CameraWindow(QMainWindow):
         self.quality_combo.addItem("1280×720", (1280, 720))
         self.quality_combo.addItem("1920×1080", (1920, 1080))
         self.quality_combo.setCurrentIndex(2)
-        self.quality_combo.setMinimumWidth(85)
+        self._fit_combo_minimum_width(self.quality_combo, 85)
         self.quality_combo.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
@@ -2154,6 +2154,26 @@ class CameraWindow(QMainWindow):
                 border-color: {colors["disabled_border"]};
             }}
             """)
+
+        # QSS 字体生效后重新测量，避免 Windows 字体比初始化阶段更宽。
+        self._fit_combo_minimum_width(self.camera_combo, 70)
+        self._fit_combo_minimum_width(self.quality_combo, 85)
+        self._update_status_bar_layout()
+
+    @staticmethod
+    def _fit_combo_minimum_width(
+        combo: QComboBox,
+        baseline_width: int,
+    ) -> None:
+        """按最长选项文字设置下拉框最小宽度，并预留内部边距。"""
+        longest_text_width = max(
+            (
+                combo.fontMetrics().horizontalAdvance(combo.itemText(index))
+                for index in range(combo.count())
+            ),
+            default=0,
+        )
+        combo.setMinimumWidth(max(baseline_width, longest_text_width + 26))
 
     @staticmethod
     def _setting_as_bool(value: Any, default: bool) -> bool:
@@ -2648,18 +2668,7 @@ class CameraWindow(QMainWindow):
             self.status_label.setText(f"发现 {len(camera_indexes)} 个摄像头")
 
         # Windows 中文字体通常更宽，根据最长选项动态保证完整显示。
-        longest_text_width = max(
-            (
-                self.camera_combo.fontMetrics().horizontalAdvance(
-                    self.camera_combo.itemText(index)
-                )
-                for index in range(self.camera_combo.count())
-            ),
-            default=0,
-        )
-        self.camera_combo.setMinimumWidth(
-            max(70, longest_text_width + 26)
-        )
+        self._fit_combo_minimum_width(self.camera_combo, 70)
         self._update_status_bar_layout()
 
         if selected_index is not None:
