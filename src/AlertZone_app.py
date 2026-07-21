@@ -1223,7 +1223,7 @@ class FramedCheckBox(QCheckBox):
         )
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(border_color, 2))
+        painter.setPen(QPen(border_color, 1.5))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(indicator_rect, 3, 3)
 
