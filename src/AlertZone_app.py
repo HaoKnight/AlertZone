@@ -93,12 +93,12 @@ def select_inference_device() -> tuple[str, str]:
     if torch.cuda.is_available():
         device_index = 0
         device_name = torch.cuda.get_device_name(device_index)
-        return f"cuda:{device_index}", f"GPU：{device_name}"
+        return f"cuda-{device_index}", f"GPU-{device_name}"
 
     # Apple Silicon 使用 MPS；其余平台在没有可用 CUDA 时回退到 CPU。
     mps_backend = getattr(torch.backends, "mps", None)
     if mps_backend is not None and mps_backend.is_available():
-        return "mps", "GPU：Apple MPS"
+        return "mps", "GPU-Apple MPS"
 
     if sys.platform == "win32":
         if torch.version.cuda is None:
@@ -880,6 +880,7 @@ class CameraWorker(QThread):
     stats_changed = Signal(int, float)
     intrusion_detected = Signal(int, object)
     status_changed = Signal(str)
+    runtime_info_changed = Signal(str)
     error_occurred = Signal(str)
 
     def __init__(
@@ -952,9 +953,7 @@ class CameraWorker(QThread):
         try:
             # .pt 文件是已经训练好的模型权重，Ultralytics 负责交给 PyTorch 加载。
             inference_device, device_label = select_inference_device()
-            self.status_changed.emit(
-                f"正在加载人体检测模型… · 推理设备：{device_label}"
-            )
+            self.status_changed.emit("正在加载人体检测模型…")
             model = YOLO(str(MODEL_PATH))
             # 显式移动模型并在每次 track 调用中指定设备，避免 Windows 环境
             # 因默认设备选择或打包差异而悄悄回退到 CPU。
@@ -977,8 +976,9 @@ class CameraWorker(QThread):
             # 摄像头可能不支持请求值，因此读取并显示最终采用的实际分辨率。
             actual_width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            self.status_changed.emit(
-                f"人体检测运行中 · {actual_width}×{actual_height}"
+            self.runtime_info_changed.emit(
+                "摄像头分辨率："
+                f"{actual_width}×{actual_height}"
                 f" · 推理设备：{device_label}"
             )
 
@@ -1515,7 +1515,7 @@ class CameraWindow(QMainWindow):
         self.detection_region: DetectionRegion | None = None
         self._normal_geometry: Any = None
         self._was_maximized = False
-        self.setWindowTitle("AlertZone-人员进入检测与报警")
+        self.setWindowTitle("AlertZone-人员进入检测与报警 · ©H-Knight")
 
         self.camera_combo = AlignedComboBox()
         # 摄像头选择框保持较小的固定宽度，窗口变宽时不再拉伸。
@@ -1604,6 +1604,22 @@ class CameraWindow(QMainWindow):
             QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Preferred,
         )
+        self.running_indicator = QLabel()
+        self.running_indicator.setObjectName("runningIndicator")
+        self.running_indicator.setFixedSize(9, 9)
+        self.running_indicator.setToolTip("检测正在运行")
+        self.running_indicator.hide()
+        self.runtime_info_label = QLabel()
+        self.runtime_info_label.setObjectName("runtimeInfoLabel")
+        self.runtime_info_label.setAlignment(
+            Qt.AlignmentFlag.AlignCenter
+        )
+        self.runtime_info_label.setMinimumWidth(0)
+        self.runtime_info_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.runtime_info_label.hide()
         self.lan_switch = QCheckBox("局域网连接")
         self.lan_switch.setObjectName("lanSwitch")
         self.lan_switch.setToolTip("启动或停止局域网网页服务")
@@ -1621,9 +1637,6 @@ class CameraWindow(QMainWindow):
         self.lan_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
-        self.author_label = QLabel("作者：H-Knight")
-        self.author_label.setObjectName("authorLabel")
-        self.author_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.people_label = QLabel("人数：—")
         self.people_label.setFixedWidth(55)
         self.people_label.setAlignment(
@@ -1695,14 +1708,26 @@ class CameraWindow(QMainWindow):
         status_layout.addSpacing(16)
         status_layout.addWidget(self.fps_label)
 
-        # 最底栏左侧显示局域网地址，中间显示作者，右侧显示运行提示。
+        # 最底栏第一行显示局域网、作者和状态；检测运行信息独占第二行。
         self.lan_card = QFrame()
         self.lan_card.setObjectName("lanCard")
-        lan_layout = QHBoxLayout(self.lan_card)
+        lan_layout = QVBoxLayout(self.lan_card)
         lan_layout.setContentsMargins(10, 5, 10, 5)
-        lan_layout.addWidget(self.lan_label, 1)
-        lan_layout.addWidget(self.author_label)
-        lan_layout.addWidget(self.status_label, 1)
+        lan_layout.setSpacing(1)
+
+        lan_primary_row = QWidget()
+        lan_primary_layout = QHBoxLayout(lan_primary_row)
+        lan_primary_layout.setContentsMargins(0, 0, 0, 0)
+        lan_primary_layout.addWidget(self.lan_label, 1)
+        lan_primary_layout.addWidget(self.status_label, 1)
+        lan_primary_layout.addSpacing(4)
+        lan_primary_layout.addWidget(
+            self.running_indicator,
+            0,
+            Qt.AlignmentFlag.AlignVCenter,
+        )
+        lan_layout.addWidget(lan_primary_row)
+        lan_layout.addWidget(self.runtime_info_label)
 
         # 显示栏放在画面上方，操作栏放在画面下方。
         self.root_layout.addWidget(self.status_card)
@@ -1789,11 +1814,13 @@ class CameraWindow(QMainWindow):
                 padding: 0 8px;
                 font-size: 13px;
             }}
-            QLabel#statusLabel, QLabel#lanLabel {{
+            QLabel#statusLabel, QLabel#runtimeInfoLabel, QLabel#lanLabel {{
                 color: {colors["status"]};
             }}
-            QLabel#authorLabel {{
-                color: #9fa6b1;
+            QLabel#runningIndicator {{
+                background: #22c55e;
+                border: none;
+                border-radius: 4px;
             }}
             QComboBox {{
                 combobox-popup: 0;
@@ -2367,6 +2394,9 @@ class CameraWindow(QMainWindow):
         worker.status_changed.connect(
             lambda text: self.update_worker_status(worker, text)
         )
+        worker.runtime_info_changed.connect(
+            lambda text: self.update_runtime_info(worker, text)
+        )
         worker.error_occurred.connect(self.show_worker_error)
         worker.finished.connect(lambda: self.worker_finished(worker))
         worker.finished.connect(worker.deleteLater)
@@ -2380,6 +2410,7 @@ class CameraWindow(QMainWindow):
         self._sync_compact_buttons()
         self.people_label.setText("人数：0")
         self.fps_label.setText("FPS：0.0")
+        self.hide_runtime_info()
         self.lan_state.set_running(True, "正在启动人体检测")
         # 所有摄像头读取和模型推理都在 QThread 中进行，主界面不会被阻塞。
         worker.start()
@@ -2393,6 +2424,7 @@ class CameraWindow(QMainWindow):
         worker = self.worker
         if worker is not None and worker.isRunning():
             self.status_label.setText("正在停止摄像头…")
+            self.hide_runtime_info()
             worker.stop()
             # 最多等待 4 秒，让线程结束并执行 camera.release()。
             if not worker.wait(4000):
@@ -2408,6 +2440,7 @@ class CameraWindow(QMainWindow):
         # 清空保存的 QPixmap，确保停止后不保留最后一帧。
         self.preview_label.show_placeholder()
         self.status_label.setText("已停止")
+        self.hide_runtime_info()
         self.people_label.setText("人数：—")
         self.fps_label.setText("FPS：—")
         self.lan_state.set_running(False, "本地检测已停止")
@@ -2458,8 +2491,32 @@ class CameraWindow(QMainWindow):
             self.status_label.setText(displayed_text)
             self.lan_state.set_status(displayed_text)
 
+    def update_runtime_info(
+        self,
+        source_worker: CameraWorker,
+        text: str,
+    ) -> None:
+        """检测真正开始后，在底栏第二行显示完整运行信息。"""
+        if self.worker is not source_worker or not source_worker.isRunning():
+            return
+
+        self.status_label.setText("正在运行检测")
+        self.running_indicator.show()
+        self.runtime_info_label.setText(text)
+        self.runtime_info_label.setToolTip(text)
+        self.runtime_info_label.show()
+        self.lan_state.set_status(text)
+
+    def hide_runtime_info(self) -> None:
+        """未检测或正在停止时完全隐藏第二行运行信息。"""
+        self.runtime_info_label.clear()
+        self.runtime_info_label.setToolTip("")
+        self.runtime_info_label.hide()
+        self.running_indicator.hide()
+
     def show_worker_error(self, message: str) -> None:
         """在主线程中显示后台检测产生的错误。"""
+        self.hide_runtime_info()
         self.lan_state.set_status(f"运行错误：{message}")
         QMessageBox.critical(self, "运行错误", message)
 
@@ -2471,6 +2528,7 @@ class CameraWindow(QMainWindow):
         self.worker = None
         self._set_idle_controls()
         self.status_label.setText("摄像头已停止")
+        self.hide_runtime_info()
         self.preview_label.show_placeholder()
         self.people_label.setText("人数：—")
         self.fps_label.setText("FPS：—")
