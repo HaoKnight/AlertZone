@@ -93,7 +93,7 @@ def select_inference_device() -> tuple[str, str]:
     if torch.cuda.is_available():
         device_index = 0
         device_name = torch.cuda.get_device_name(device_index)
-        return f"cuda-{device_index}", f"GPU-{device_name}"
+        return f"cuda:{device_index}", f"GPU:{device_name}"
 
     # Apple Silicon 使用 MPS；其余平台在没有可用 CUDA 时回退到 CPU。
     mps_backend = getattr(torch.backends, "mps", None)
