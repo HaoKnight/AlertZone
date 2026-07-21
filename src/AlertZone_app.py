@@ -989,7 +989,7 @@ class CameraWorker(QThread):
             actual_width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
             actual_height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
             self.runtime_info_changed.emit(
-                "摄像头分辨率："
+                "视频分辨率："
                 f"{actual_width}×{actual_height}"
                 f" · 推理设备：{device_label}"
             )
