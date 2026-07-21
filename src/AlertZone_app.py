@@ -99,23 +99,17 @@ def select_inference_device() -> tuple[str, str]:
     if torch.cuda.is_available():
         device_index = 0
         device_name = torch.cuda.get_device_name(device_index)
-        # 省略厂商、产品线和移动版后缀，只保留最有辨识度的核心型号。
-        compact_name = device_name
-        for prefix in ("NVIDIA GeForce ", "NVIDIA "):
-            if compact_name.startswith(prefix):
-                compact_name = compact_name.removeprefix(prefix)
-                break
-        for suffix in (" Laptop GPU", " GPU"):
-            if compact_name.endswith(suffix):
-                compact_name = compact_name.removesuffix(suffix)
-                break
-        return f"cuda:{device_index}", f"GPU · {compact_name}"
+        return f"cuda:{device_index}", device_name
 
     # Apple Silicon 使用 MPS；其余平台在没有可用 CUDA 时回退到 CPU。
     mps_backend = getattr(torch.backends, "mps", None)
     if mps_backend is not None and mps_backend.is_available():
-        return "mps", "GPU · Apple MPS"
+        return "mps", "GPU-Apple MPS"
 
+    if sys.platform == "win32":
+        if torch.version.cuda is None:
+            return "cpu", "CPU（当前 PyTorch 不含 CUDA）"
+        return "cpu", "CPU（CUDA 不可用，请检查 NVIDIA 驱动）"
     return "cpu", "CPU"
 
 
