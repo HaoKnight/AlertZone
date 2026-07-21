@@ -1205,6 +1205,18 @@ class AlignedComboBox(QComboBox):
         popup.move(below_left)
 
 
+# ---------- 可点击的信息标签 ----------
+class ClickableLabel(QLabel):
+    """单击时发出信号，用于切换底栏左侧的信息。"""
+
+    clicked = Signal()
+
+    def mouseReleaseEvent(self, event: Any) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
 # ---------- 保持宽高比的视频显示控件 ----------
 class PreviewLabel(QLabel):
     """保持视频宽高比的预览控件。"""
@@ -1513,6 +1525,10 @@ class CameraWindow(QMainWindow):
         self.compact_mode = False
         self.dark_mode = False
         self.detection_region: DetectionRegion | None = None
+        self._lan_info_text = "局域网：已关闭"
+        self._lan_info_tooltip = ""
+        self._runtime_info_text = ""
+        self._show_runtime_info = False
         self._normal_geometry: Any = None
         self._was_maximized = False
         self.setWindowTitle("AlertZone-人员进入检测与报警 · ©H-Knight")
@@ -1598,10 +1614,10 @@ class CameraWindow(QMainWindow):
         self.status_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
-        # 运行提示占用底部信息栏右半部分；窗口变窄时允许从左侧裁切。
+        # 右侧状态只占文字所需宽度，其余空间优先留给左侧完整运行信息。
         self.status_label.setMinimumWidth(0)
         self.status_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Preferred,
         )
         self.running_indicator = QLabel()
@@ -1609,22 +1625,11 @@ class CameraWindow(QMainWindow):
         self.running_indicator.setFixedSize(9, 9)
         self.running_indicator.setToolTip("检测正在运行")
         self.running_indicator.hide()
-        self.runtime_info_label = QLabel()
-        self.runtime_info_label.setObjectName("runtimeInfoLabel")
-        self.runtime_info_label.setAlignment(
-            Qt.AlignmentFlag.AlignCenter
-        )
-        self.runtime_info_label.setMinimumWidth(0)
-        self.runtime_info_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored,
-            QSizePolicy.Policy.Preferred,
-        )
-        self.runtime_info_label.hide()
         self.lan_switch = QCheckBox("局域网连接")
         self.lan_switch.setObjectName("lanSwitch")
         self.lan_switch.setToolTip("启动或停止局域网网页服务")
         self.lan_switch.toggled.connect(self.set_lan_server_enabled)
-        self.lan_label = QLabel("局域网：已关闭")
+        self.lan_label = ClickableLabel(self._lan_info_text)
         self.lan_label.setObjectName("lanLabel")
         self.lan_label.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
@@ -1634,9 +1639,7 @@ class CameraWindow(QMainWindow):
             QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Preferred,
         )
-        self.lan_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
+        self.lan_label.clicked.connect(self.toggle_primary_info)
         self.people_label = QLabel("人数：—")
         self.people_label.setFixedWidth(55)
         self.people_label.setAlignment(
@@ -1719,7 +1722,7 @@ class CameraWindow(QMainWindow):
         lan_primary_layout = QHBoxLayout(lan_primary_row)
         lan_primary_layout.setContentsMargins(0, 0, 0, 0)
         lan_primary_layout.addWidget(self.lan_label, 1)
-        lan_primary_layout.addWidget(self.status_label, 1)
+        lan_primary_layout.addWidget(self.status_label)
         lan_primary_layout.addSpacing(4)
         lan_primary_layout.addWidget(
             self.running_indicator,
@@ -1727,7 +1730,6 @@ class CameraWindow(QMainWindow):
             Qt.AlignmentFlag.AlignVCenter,
         )
         lan_layout.addWidget(lan_primary_row)
-        lan_layout.addWidget(self.runtime_info_label)
 
         # 显示栏放在画面上方，操作栏放在画面下方。
         self.root_layout.addWidget(self.status_card)
@@ -1814,7 +1816,7 @@ class CameraWindow(QMainWindow):
                 padding: 0 8px;
                 font-size: 13px;
             }}
-            QLabel#statusLabel, QLabel#runtimeInfoLabel, QLabel#lanLabel {{
+            QLabel#statusLabel, QLabel#lanLabel {{
                 color: {colors["status"]};
             }}
             QLabel#runningIndicator {{
@@ -2094,13 +2096,48 @@ class CameraWindow(QMainWindow):
         else:
             self.stop_lan_server()
 
+    def set_lan_info(self, text: str, tooltip: str = "") -> None:
+        """保存局域网状态；当前显示局域网信息时同步刷新标签。"""
+        self._lan_info_text = text
+        self._lan_info_tooltip = tooltip
+        if not self._runtime_info_text or not self._show_runtime_info:
+            self.refresh_primary_info()
+
+    def refresh_primary_info(self) -> None:
+        """在第一行左侧显示运行信息或局域网信息。"""
+        runtime_visible = bool(
+            self._runtime_info_text and self._show_runtime_info
+        )
+        if runtime_visible:
+            text = self._runtime_info_text
+            tooltip = "点击切换至局域网信息"
+        else:
+            text = self._lan_info_text
+            tooltip = self._lan_info_tooltip
+            if self._runtime_info_text:
+                switch_tip = "点击切换至分辨率和推理设备信息"
+                tooltip = f"{tooltip}\n{switch_tip}" if tooltip else switch_tip
+
+        self.lan_label.setText(text)
+        self.lan_label.setToolTip(tooltip)
+        if self._runtime_info_text:
+            self.lan_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.lan_label.unsetCursor()
+
+    def toggle_primary_info(self) -> None:
+        """检测运行时切换第一行左侧的两类信息。"""
+        if not self._runtime_info_text:
+            return
+        self._show_runtime_info = not self._show_runtime_info
+        self.refresh_primary_info()
+
     def start_lan_server(self) -> None:
         """启动只读局域网前端服务；它不打开摄像头也不执行模型推理。"""
         if self.web_server is not None and self.web_server.isRunning():
             return
 
-        self.lan_label.setText("局域网：正在启动…")
-        self.lan_label.setToolTip("")
+        self.set_lan_info("局域网：正在启动…")
         server = LanWebServer(self.lan_state, parent=self)
         server.server_started.connect(self.show_lan_url)
         server.server_failed.connect(self.show_lan_error)
@@ -2111,8 +2148,7 @@ class CameraWindow(QMainWindow):
 
     def stop_lan_server(self) -> None:
         """停止网页服务；摄像头识别线程继续按原状态运行。"""
-        self.lan_label.setText("局域网：已关闭")
-        self.lan_label.setToolTip("")
+        self.set_lan_info("局域网：已关闭")
         server = self.web_server
         if server is None:
             return
@@ -2126,13 +2162,14 @@ class CameraWindow(QMainWindow):
         """在本地状态栏显示其他局域网设备应该访问的地址。"""
         if not self.lan_switch.isChecked():
             return
-        self.lan_label.setText(f"局域网：{url}")
-        self.lan_label.setToolTip(f"同一局域网设备访问 {url}")
+        self.set_lan_info(
+            f"局域网：{url}",
+            f"同一局域网设备访问 {url}",
+        )
 
     def show_lan_error(self, message: str) -> None:
         """网页服务失败不应中断本地摄像头检测。"""
-        self.lan_label.setText("局域网：启动失败")
-        self.lan_label.setToolTip(message)
+        self.set_lan_info("局域网：启动失败", message)
         self.lan_switch.blockSignals(True)
         self.lan_switch.setChecked(False)
         self.lan_switch.blockSignals(False)
@@ -2149,9 +2186,9 @@ class CameraWindow(QMainWindow):
             self.lan_switch.blockSignals(True)
             self.lan_switch.setChecked(False)
             self.lan_switch.blockSignals(False)
-            self.lan_label.setText("局域网：服务已停止")
-        elif self.lan_label.text() != "局域网：启动失败":
-            self.lan_label.setText("局域网：已关闭")
+            self.set_lan_info("局域网：服务已停止")
+        elif self._lan_info_text != "局域网：启动失败":
+            self.set_lan_info("局域网：已关闭")
 
     def record_intrusion(
         self,
@@ -2496,22 +2533,22 @@ class CameraWindow(QMainWindow):
         source_worker: CameraWorker,
         text: str,
     ) -> None:
-        """检测真正开始后，在底栏第二行显示完整运行信息。"""
+        """检测真正开始后，在第一行左侧优先显示完整运行信息。"""
         if self.worker is not source_worker or not source_worker.isRunning():
             return
 
         self.status_label.setText("正在运行检测")
         self.running_indicator.show()
-        self.runtime_info_label.setText(text)
-        self.runtime_info_label.setToolTip(text)
-        self.runtime_info_label.show()
+        self._runtime_info_text = text
+        self._show_runtime_info = True
+        self.refresh_primary_info()
         self.lan_state.set_status(text)
 
     def hide_runtime_info(self) -> None:
-        """未检测或正在停止时完全隐藏第二行运行信息。"""
-        self.runtime_info_label.clear()
-        self.runtime_info_label.setToolTip("")
-        self.runtime_info_label.hide()
+        """未检测或正在停止时恢复显示第一行左侧的局域网信息。"""
+        self._runtime_info_text = ""
+        self._show_runtime_info = False
+        self.refresh_primary_info()
         self.running_indicator.hide()
 
     def show_worker_error(self, message: str) -> None:
