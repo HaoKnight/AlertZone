@@ -86,6 +86,30 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
+#### Windows 使用 NVIDIA 显卡
+
+`requirements.txt` 会安装 Ultralytics 所需的 PyTorch，但不能保证已有环境中的
+PyTorch 是 CUDA 版本。RTX 3060 用户先在 PowerShell 中检查：
+
+```powershell
+nvidia-smi
+python -c "import torch; print('PyTorch:', torch.__version__); print('PyTorch CUDA:', torch.version.cuda); print('CUDA available:', torch.cuda.is_available())"
+```
+
+如果 `PyTorch CUDA` 为 `None` 或 `CUDA available` 为 `False`，请先更新 NVIDIA
+驱动，然后在当前虚拟环境中重新安装 CUDA 版 PyTorch。以下是 CUDA 12.6 示例；
+也可使用 [PyTorch 官方安装选择器](https://pytorch.org/get-started/locally/) 生成适合当前环境的命令：
+
+```powershell
+python -m pip uninstall -y torch torchvision
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+python -c "import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))"
+```
+
+启动检测后，窗口状态栏会明确显示 `推理设备：GPU：NVIDIA GeForce RTX 3060`。
+如果显示 `CPU（当前 PyTorch 不含 CUDA）`，说明运行程序的 Python/虚拟环境仍然
+不是刚才安装 CUDA PyTorch 的环境。
+
 如果运行时提示缺少 `lap`，请补充安装：
 
 ```bash
@@ -232,7 +256,7 @@ python -m pip install lapx
 python -m pip install --upgrade pyinstaller pyinstaller-hooks-contrib
 ```
 
-如果目标电脑只使用 CPU，可在安装项目依赖前，按照 PyTorch 官网为 Windows 选择 CPU 版本；如果需要 NVIDIA GPU，则必须根据目标显卡、驱动和 CUDA 环境选择对应的 PyTorch 版本。不要把开发电脑上未经确认的 CUDA 环境直接作为通用发布包。
+如果目标电脑只使用 CPU，可在安装项目依赖前，按照 PyTorch 官网为 Windows 选择 CPU 版本；如果需要 NVIDIA GPU，则必须根据目标显卡、驱动和 CUDA 环境选择对应的 PyTorch 版本。Windows 安装包会继承构建虚拟环境中的 PyTorch 类型，因此 GPU 版必须在确认 `torch.cuda.is_available()` 为 `True` 的同一环境中重新打包；CPU 环境构建出的旧 `.exe` 无法在目标电脑上自动变成 CUDA 版。
 
 确认关键依赖可以导入：
 

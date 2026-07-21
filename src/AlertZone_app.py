@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import cv2
+import torch
 from PySide6.QtCore import (
     QPoint,
     QRect,
@@ -85,6 +86,25 @@ SETTINGS_ORGANIZATION = "CameraMonitor"
 SETTINGS_APPLICATION = "CameraApp"
 
 DetectionRegion = tuple[float, float, float, float]
+
+
+def select_inference_device() -> tuple[str, str]:
+    """选择 YOLO 推理设备，并返回传给模型的值和界面显示名称。"""
+    if torch.cuda.is_available():
+        device_index = 0
+        device_name = torch.cuda.get_device_name(device_index)
+        return f"cuda:{device_index}", f"GPU：{device_name}"
+
+    # Apple Silicon 使用 MPS；其余平台在没有可用 CUDA 时回退到 CPU。
+    mps_backend = getattr(torch.backends, "mps", None)
+    if mps_backend is not None and mps_backend.is_available():
+        return "mps", "GPU：Apple MPS"
+
+    if sys.platform == "win32":
+        if torch.version.cuda is None:
+            return "cpu", "CPU（当前 PyTorch 不含 CUDA）"
+        return "cpu", "CPU（CUDA 不可用，请检查 NVIDIA 驱动）"
+    return "cpu", "CPU"
 
 
 # ---------- 局域网检测状态 ----------
@@ -931,8 +951,14 @@ class CameraWorker(QThread):
 
         try:
             # .pt 文件是已经训练好的模型权重，Ultralytics 负责交给 PyTorch 加载。
-            self.status_changed.emit("正在加载人体检测模型…")
+            inference_device, device_label = select_inference_device()
+            self.status_changed.emit(
+                f"正在加载人体检测模型… · 推理设备：{device_label}"
+            )
             model = YOLO(str(MODEL_PATH))
+            # 显式移动模型并在每次 track 调用中指定设备，避免 Windows 环境
+            # 因默认设备选择或打包差异而悄悄回退到 CPU。
+            model.to(inference_device)
 
             # 使用 OpenCV 打开指定编号的摄像头，并请求界面中选择的分辨率。
             self.status_changed.emit(f"正在打开摄像头 {self.camera_index}…")
@@ -953,6 +979,7 @@ class CameraWorker(QThread):
             actual_height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
             self.status_changed.emit(
                 f"人体检测运行中 · {actual_width}×{actual_height}"
+                f" · 推理设备：{device_label}"
             )
 
             previous_time = time.perf_counter()
@@ -985,6 +1012,7 @@ class CameraWorker(QThread):
                     classes=[PERSON_CLASS_ID],
                     conf=0.5,
                     imgsz=640,
+                    device=inference_device,
                     verbose=False,
                 )[0]
                 (
