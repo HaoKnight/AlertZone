@@ -1211,7 +1211,9 @@ class FramedCheckBox(QCheckBox):
             self,
         ).adjusted(0, 0, -1, -1)
 
-        border_color = QColor("#2563eb" if self.isChecked() else "#8e96a3")
+        border_color = QColor(
+            "#ffffff" if self.property("darkTheme") else "#000000"
+        )
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(border_color, 1))
@@ -1817,6 +1819,11 @@ class CameraWindow(QMainWindow):
                 "menu_hover": "#eaf2ff",
                 "menu_hover_text": "#1d4ed8",
             }
+
+        # Windows 自定义复选框使用最清晰的黑白主题边框。
+        for checkbox in (self.mirror_checkbox, self.lan_switch):
+            checkbox.setProperty("darkTheme", self.dark_mode)
+            checkbox.update()
 
         # 使用一份 QSS 配合颜色表，同时生成浅色和黑色两套主题。
         self.setStyleSheet(f"""
