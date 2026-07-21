@@ -1255,7 +1255,7 @@ PlatformCheckBox = FramedCheckBox if sys.platform == "win32" else QCheckBox
 
 # ---------- 始终向下并对齐的选择框 ----------
 class AlignedComboBox(QComboBox):
-    """让选项列表完整容纳文字，并固定显示在选择框正下方。"""
+    """让下拉列表与选择框等宽，并固定显示在正下方。"""
 
     def showPopup(self) -> None:
         """先显示列表，再在下一次事件循环中修正位置与内容宽度。"""
@@ -1267,16 +1267,8 @@ class AlignedComboBox(QComboBox):
         if popup is None:
             return
 
-        # 下拉列表还需容纳选中标记和内部边距，因此按最长文字额外扩宽。
-        longest_text_width = max(
-            (
-                self.fontMetrics().horizontalAdvance(self.itemText(index))
-                for index in range(self.count())
-            ),
-            default=0,
-        )
-        popup_width = max(self.width(), longest_text_width + 44)
-        popup.resize(popup_width, popup.height())
+        # 选择框的最小宽度已包含列表内部边距，此处保持左右严格对齐。
+        popup.resize(self.width(), popup.height())
         below_left = self.mapToGlobal(QPoint(0, self.height()))
         popup.move(below_left)
 
@@ -1807,13 +1799,18 @@ class CameraWindow(QMainWindow):
             self.show_lan_context_menu
         )
         self.people_label = QLabel("人数：—")
-        self.people_label.setFixedWidth(55)
+        self.people_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
         self.people_label.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
         self.fps_label = QLabel("FPS：—")
-        # 预留三位整数和一位小数的宽度，FPS 更新时不再推动左侧控件。
-        self.fps_label.setFixedWidth(80)
+        self.fps_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
         self.fps_label.setAlignment(
             Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
@@ -1949,14 +1946,13 @@ class CameraWindow(QMainWindow):
             max(widget.minimumWidth(), widget.sizeHint().width())
             for widget in self._status_widgets
         )
-        spacing_width = self.status_layout.horizontalSpacing() * 7
+        spacing_width = self.status_layout.horizontalSpacing() * 6
         margins = self.status_layout.contentsMargins()
         required_width = (
             natural_width
             + spacing_width
             + margins.left()
             + margins.right()
-            + 8
         )
         available_width = max(self.width() - 20, 0)
         self._arrange_status_bar(available_width < required_width)
@@ -1965,6 +1961,13 @@ class CameraWindow(QMainWindow):
         super().resizeEvent(event)
         if hasattr(self, "status_layout"):
             self._update_status_bar_layout()
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        # Windows 会在窗口显示后最终确定字体，再测量一次避免数像素误差。
+        self._fit_combo_minimum_width(self.camera_combo, 70)
+        self._fit_combo_minimum_width(self.quality_combo, 85)
+        self._update_status_bar_layout()
 
     def _apply_styles(self) -> None:
         """根据 dark_mode 生成并应用整套 Qt 样式表。"""
@@ -2181,7 +2184,8 @@ class CameraWindow(QMainWindow):
             ),
             default=0,
         )
-        combo.setMinimumWidth(max(baseline_width, longest_text_width + 26))
+        # 额外空间用于下拉列表的选中标记和左右内边距。
+        combo.setMinimumWidth(max(baseline_width, longest_text_width + 44))
 
     @staticmethod
     def _setting_as_bool(value: Any, default: bool) -> bool:
