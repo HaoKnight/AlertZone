@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -1681,10 +1682,10 @@ class CameraWindow(QMainWindow):
         self.setWindowTitle("AlertZone-人员进入检测与报警 · ©H-Knight")
 
         self.camera_combo = AlignedComboBox()
-        # 摄像头选择框保持较小的固定宽度，窗口变宽时不再拉伸。
-        self.camera_combo.setFixedWidth(70)
+        # 摄像头和分辨率选择框随窗口宽度共同伸缩。
+        self.camera_combo.setMinimumWidth(70)
         self.camera_combo.setSizePolicy(
-            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
 
@@ -1695,6 +1696,10 @@ class CameraWindow(QMainWindow):
         self.quality_combo.addItem("1920×1080", (1920, 1080))
         self.quality_combo.setCurrentIndex(2)
         self.quality_combo.setMinimumWidth(85)
+        self.quality_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
 
         self.refresh_button = QPushButton("刷新")
         self.refresh_button.clicked.connect(self.refresh_cameras)
@@ -1851,20 +1856,23 @@ class CameraWindow(QMainWindow):
 
         self.status_card = QFrame()
         self.status_card.setObjectName("statusCard")
-        status_layout = QHBoxLayout(self.status_card)
-        status_layout.setContentsMargins(10, 6, 10, 6)
-        # 摄像头设置和局域网开关统一放到顶部一栏。
-        status_layout.addWidget(self.camera_combo)
-        status_layout.addWidget(self.refresh_button)
-        status_layout.addWidget(self.quality_combo)
-        status_layout.addWidget(self.mirror_checkbox)
-        status_layout.addWidget(self.lan_switch)
-        status_layout.addStretch(1)
-        status_layout.addWidget(self.people_label)
-        status_layout.addSpacing(16)
-        status_layout.addWidget(self.fps_label)
+        self.status_layout = QGridLayout(self.status_card)
+        self.status_layout.setContentsMargins(10, 6, 10, 6)
+        self.status_layout.setHorizontalSpacing(6)
+        self.status_layout.setVerticalSpacing(4)
+        self._status_widgets = (
+            self.camera_combo,
+            self.refresh_button,
+            self.quality_combo,
+            self.mirror_checkbox,
+            self.lan_switch,
+            self.people_label,
+            self.fps_label,
+        )
+        self._status_two_rows: bool | None = None
+        self._arrange_status_bar(two_rows=False)
 
-        # 最底栏第一行显示局域网、作者和状态；检测运行信息独占第二行。
+        # 最底栏显示可切换的局域网/运行信息以及当前运行状态。
         self.lan_card = QFrame()
         self.lan_card.setObjectName("lanCard")
         lan_layout = QVBoxLayout(self.lan_card)
@@ -1891,6 +1899,64 @@ class CameraWindow(QMainWindow):
         self.root_layout.addWidget(self.lan_card)
 
         self.setCentralWidget(root)
+
+    def _arrange_status_bar(self, two_rows: bool) -> None:
+        """根据可用宽度把顶部状态栏排成一行或两行。"""
+        if self._status_two_rows is two_rows:
+            return
+
+        for widget in self._status_widgets:
+            self.status_layout.removeWidget(widget)
+        for column in range(9):
+            self.status_layout.setColumnStretch(column, 0)
+
+        if two_rows:
+            # 窄窗口：常用摄像头设置在第一行，其余状态放到第二行。
+            self.status_layout.addWidget(self.camera_combo, 0, 0)
+            self.status_layout.addWidget(self.refresh_button, 0, 1)
+            self.status_layout.addWidget(self.quality_combo, 0, 2)
+            self.status_layout.addWidget(self.mirror_checkbox, 0, 3)
+            self.status_layout.addWidget(self.lan_switch, 1, 0, 1, 2)
+            self.status_layout.addWidget(self.people_label, 1, 6)
+            self.status_layout.addWidget(self.fps_label, 1, 8)
+        else:
+            # 宽窗口：所有控件保持单行，中央空余空间自动伸缩。
+            self.status_layout.addWidget(self.camera_combo, 0, 0)
+            self.status_layout.addWidget(self.refresh_button, 0, 1)
+            self.status_layout.addWidget(self.quality_combo, 0, 2)
+            self.status_layout.addWidget(self.mirror_checkbox, 0, 3)
+            self.status_layout.addWidget(self.lan_switch, 0, 4)
+            self.status_layout.addWidget(self.people_label, 0, 6)
+            self.status_layout.addWidget(self.fps_label, 0, 8)
+
+        self.status_layout.setColumnStretch(0, 1)
+        self.status_layout.setColumnStretch(2, 1)
+        self.status_layout.setColumnStretch(5, 2)
+        self._status_two_rows = two_rows
+        self.status_card.updateGeometry()
+
+    def _update_status_bar_layout(self) -> None:
+        """窗口宽度不足时自动启用双行顶部状态栏。"""
+        natural_width = sum(
+            max(widget.minimumWidth(), widget.sizeHint().width())
+            for widget in self._status_widgets
+        )
+        spacing_width = self.status_layout.horizontalSpacing() * 7
+        margins = self.status_layout.contentsMargins()
+        required_width = (
+            natural_width
+            + spacing_width
+            + margins.left()
+            + margins.right()
+            + 8
+        )
+        available_width = max(self.width() - 20, 0)
+        self._arrange_status_bar(available_width < required_width)
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "status_layout"):
+            self._update_status_bar_layout()
 
     def _apply_styles(self) -> None:
         """根据 dark_mode 生成并应用整套 Qt 样式表。"""
