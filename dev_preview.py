@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-APP_FILE = PROJECT_DIR / "camera_app.py"
+APP_FILE = PROJECT_DIR / "AlertZone_app.py"
 CHECK_INTERVAL = 0.5
 
 
