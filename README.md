@@ -220,12 +220,12 @@ python src/AlertZone_app.py
 
 #### 1. 准备环境
 
-在 64 位 Windows 10 或 Windows 11 上安装 Python 3.11。安装 Python 时建议勾选“Add Python to PATH”。将项目放到本地磁盘，例如 `D:\AlertZone`，然后打开“命令提示符（CMD）”：
+在 64 位 Windows 10 或 Windows 11 上安装 Python 3.11。安装 Python 时建议勾选“Add Python to PATH”。将项目放到本地磁盘，例如 `D:\AlertZone`，然后打开 PowerShell，并进入项目根目录（不能停留在 `src` 目录）：
 
-```bat
-cd /d "D:\AlertZone"
+```powershell
+Set-Location "D:\AlertZone"
 py -3.11 -m venv .venv-build
-.venv-build\Scripts\activate
+.\.venv-build\Scripts\Activate.ps1
 python -m pip install --upgrade pip setuptools wheel
 python -m pip install -r requirements.txt
 python -m pip install lapx
@@ -236,28 +236,28 @@ python -m pip install --upgrade pyinstaller pyinstaller-hooks-contrib
 
 确认关键依赖可以导入：
 
-```bat
+```powershell
 python -c "import cv2, torch, ultralytics, PySide6; print('Dependencies OK')"
 python src\AlertZone_app.py
 ```
 
 #### 2. 构建文件夹版（推荐）
 
-在 CMD 中运行：
+在 PowerShell 中运行。每行末尾的反引号 `` ` `` 是 PowerShell 续行符，其后不能再有空格：
 
-```bat
-python -m PyInstaller ^
-  --noconfirm ^
-  --clean ^
-  --windowed ^
-  --onedir ^
-  --name AlertZone ^
-  --icon "icon\icon.ico" ^
-  --add-data "icon\icon.png:icon" ^
-  --add-data "src\yolo11n.pt:." ^
-  --add-data "src\web:web" ^
-  --collect-all ultralytics ^
-  --copy-metadata ultralytics ^
+```powershell
+python -m PyInstaller `
+  --noconfirm `
+  --clean `
+  --windowed `
+  --onedir `
+  --name AlertZone `
+  --icon "icon\icon.ico" `
+  --add-data "icon\icon.png:icon" `
+  --add-data "src\yolo11n.pt:." `
+  --add-data "src\web:web" `
+  --collect-all ultralytics `
+  --copy-metadata ultralytics `
   src\AlertZone_app.py
 ```
 
@@ -267,10 +267,10 @@ python -m PyInstaller ^
 dist\AlertZone\AlertZone.exe
 ```
 
-先从 CMD 启动一次，便于观察错误：
+先从 PowerShell 启动一次，便于观察错误：
 
-```bat
-dist\AlertZone\AlertZone.exe
+```powershell
+.\dist\AlertZone\AlertZone.exe
 ```
 
 再通过资源管理器双击测试。发布文件夹版时必须发送整个 `dist\AlertZone` 文件夹，不能只复制其中的 `AlertZone.exe`。
@@ -286,19 +286,19 @@ Get-FileHash .\AlertZone-Windows-x64.zip -Algorithm SHA256
 
 确认文件夹版完全正常后，将 `--onedir` 改为 `--onefile`：
 
-```bat
-python -m PyInstaller ^
-  --noconfirm ^
-  --clean ^
-  --windowed ^
-  --onefile ^
-  --name AlertZone ^
-  --icon "icon\icon.ico" ^
-  --add-data "icon\icon.png:icon" ^
-  --add-data "src\yolo11n.pt:." ^
-  --add-data "src\web:web" ^
-  --collect-all ultralytics ^
-  --copy-metadata ultralytics ^
+```powershell
+python -m PyInstaller `
+  --noconfirm `
+  --clean `
+  --windowed `
+  --onefile `
+  --name AlertZone `
+  --icon "icon\icon.ico" `
+  --add-data "icon\icon.png:icon" `
+  --add-data "src\yolo11n.pt:." `
+  --add-data "src\web:web" `
+  --collect-all ultralytics `
+  --copy-metadata ultralytics `
   src\AlertZone_app.py
 ```
 
