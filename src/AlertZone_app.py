@@ -26,12 +26,14 @@ from PySide6.QtCore import (
     Qt,
     QThread,
     QTimer,
+    QUrl,
     Signal,
 )
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
     QCursor,
+    QDesktopServices,
     QIcon,
     QImage,
     QPainter,
@@ -46,9 +48,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QStyle,
+    QStyleOptionButton,
     QVBoxLayout,
     QWidget,
 )
@@ -93,17 +98,23 @@ def select_inference_device() -> tuple[str, str]:
     if torch.cuda.is_available():
         device_index = 0
         device_name = torch.cuda.get_device_name(device_index)
-        return f"cuda:{device_index}", f"{device_name}"
+        # 省略厂商、产品线和移动版后缀，只保留最有辨识度的核心型号。
+        compact_name = device_name
+        for prefix in ("NVIDIA GeForce ", "NVIDIA "):
+            if compact_name.startswith(prefix):
+                compact_name = compact_name.removeprefix(prefix)
+                break
+        for suffix in (" Laptop GPU", " GPU"):
+            if compact_name.endswith(suffix):
+                compact_name = compact_name.removesuffix(suffix)
+                break
+        return f"cuda:{device_index}", f"GPU · {compact_name}"
 
     # Apple Silicon 使用 MPS；其余平台在没有可用 CUDA 时回退到 CPU。
     mps_backend = getattr(torch.backends, "mps", None)
     if mps_backend is not None and mps_backend.is_available():
-        return "mps", "GPU-Apple MPS"
+        return "mps", "GPU · Apple MPS"
 
-    if sys.platform == "win32":
-        if torch.version.cuda is None:
-            return "cpu", "CPU（当前 PyTorch 不含 CUDA）"
-        return "cpu", "CPU（CUDA 不可用，请检查 NVIDIA 驱动）"
     return "cpu", "CPU"
 
 
@@ -1185,6 +1196,33 @@ class CameraScanWorker(QThread):
             self.cameras_found.emit(camera_indexes)
 
 
+# ---------- 始终带清晰边框的复选框 ----------
+class FramedCheckBox(QCheckBox):
+    """保留系统对勾，并为 Windows 补画清晰的方框。"""
+
+    def paintEvent(self, event: Any) -> None:
+        super().paintEvent(event)
+
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        indicator_rect = self.style().subElementRect(
+            QStyle.SubElement.SE_CheckBoxIndicator,
+            option,
+            self,
+        ).adjusted(0, 0, -1, -1)
+
+        border_color = QColor("#2563eb" if self.isChecked() else "#8e96a3")
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(border_color, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(indicator_rect, 3, 3)
+
+
+# macOS 使用系统原生外观，只有 Windows 需要额外补画边框。
+PlatformCheckBox = FramedCheckBox if sys.platform == "win32" else QCheckBox
+
+
 # ---------- 始终向下并对齐的选择框 ----------
 class AlignedComboBox(QComboBox):
     """让选项列表与选择框等宽，并固定显示在正下方。"""
@@ -1552,7 +1590,7 @@ class CameraWindow(QMainWindow):
         self.refresh_button = QPushButton("刷新")
         self.refresh_button.clicked.connect(self.refresh_cameras)
 
-        self.mirror_checkbox = QCheckBox("镜像")
+        self.mirror_checkbox = PlatformCheckBox("镜像")
         self.mirror_checkbox.setChecked(True)
         self.mirror_checkbox.setToolTip("检测运行期间也可随时切换镜像画面")
         self.mirror_checkbox.toggled.connect(self.set_mirror_enabled)
@@ -1625,7 +1663,7 @@ class CameraWindow(QMainWindow):
         self.running_indicator.setFixedSize(9, 9)
         self.running_indicator.setToolTip("检测正在运行")
         self.running_indicator.hide()
-        self.lan_switch = QCheckBox("局域网连接")
+        self.lan_switch = PlatformCheckBox("局域网连接")
         self.lan_switch.setObjectName("lanSwitch")
         self.lan_switch.setToolTip("启动或停止局域网网页服务")
         self.lan_switch.toggled.connect(self.set_lan_server_enabled)
@@ -1640,6 +1678,12 @@ class CameraWindow(QMainWindow):
             QSizePolicy.Policy.Preferred,
         )
         self.lan_label.clicked.connect(self.toggle_primary_info)
+        self.lan_label.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.lan_label.customContextMenuRequested.connect(
+            self.show_lan_context_menu
+        )
         self.people_label = QLabel("人数：—")
         self.people_label.setFixedWidth(55)
         self.people_label.setAlignment(
@@ -1754,6 +1798,8 @@ class CameraWindow(QMainWindow):
                 "disabled_text": "#626a78",
                 "disabled_bg": "#1b1e24",
                 "disabled_border": "#282d35",
+                "menu_hover": "#26344d",
+                "menu_hover_text": "#dbeafe",
             }
         else:
             colors = {
@@ -1768,6 +1814,8 @@ class CameraWindow(QMainWindow):
                 "disabled_text": "#9aa4b2",
                 "disabled_bg": "#edf0f4",
                 "disabled_border": "#e0e4e9",
+                "menu_hover": "#eaf2ff",
+                "menu_hover_text": "#1d4ed8",
             }
 
         # 使用一份 QSS 配合颜色表，同时生成浅色和黑色两套主题。
@@ -1823,6 +1871,23 @@ class CameraWindow(QMainWindow):
                 background: #22c55e;
                 border: none;
                 border-radius: 4px;
+            }}
+            QMenu {{
+                color: {colors["text"]};
+                background: {colors["card"]};
+                border: 1px solid {colors["border"]};
+                border-radius: 9px;
+                padding: 6px;
+            }}
+            QMenu::item {{
+                color: {colors["text"]};
+                background: transparent;
+                padding: 7px 12px;
+                border-radius: 6px;
+            }}
+            QMenu::item:selected {{
+                color: {colors["menu_hover_text"]};
+                background: {colors["menu_hover"]};
             }}
             QComboBox {{
                 combobox-popup: 0;
@@ -2131,6 +2196,43 @@ class CameraWindow(QMainWindow):
             return
         self._show_runtime_info = not self._show_runtime_info
         self.refresh_primary_info()
+
+    def current_lan_url(self) -> str:
+        """从当前局域网状态中提取可由浏览器访问的 HTTP 地址。"""
+        candidate = self._lan_info_text.partition("：")[2].strip()
+        parsed = urlparse(candidate)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            return candidate
+        return ""
+
+    def copy_lan_info(self) -> None:
+        """只把当前局域网访问网址复制到系统剪贴板。"""
+        url = self.current_lan_url()
+        if url:
+            QApplication.clipboard().setText(url)
+
+    def open_lan_in_browser(self) -> None:
+        """使用系统默认浏览器打开当前局域网访问地址。"""
+        url = self.current_lan_url()
+        if url and not QDesktopServices.openUrl(QUrl(url)):
+            QMessageBox.warning(self, "打开失败", "无法调用默认浏览器。")
+
+    def show_lan_context_menu(self, position: QPoint) -> None:
+        """仅在显示局域网状态时提供复制和浏览器打开操作。"""
+        url = self.current_lan_url()
+        if (
+            not url
+            or (self._runtime_info_text and self._show_runtime_info)
+        ):
+            return
+
+        menu = QMenu(self)
+        menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        copy_action = menu.addAction("复制网址")
+        open_action = menu.addAction("默认浏览器打开")
+        copy_action.triggered.connect(self.copy_lan_info)
+        open_action.triggered.connect(self.open_lan_in_browser)
+        menu.exec(self.lan_label.mapToGlobal(position))
 
     def start_lan_server(self) -> None:
         """启动只读局域网前端服务；它不打开摄像头也不执行模型推理。"""
