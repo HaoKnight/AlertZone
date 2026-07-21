@@ -64,7 +64,14 @@ ALERT_CONFIRM_OPTIONS_SECONDS = (0.0, 0.2, 0.5, 1.0, 2.0)
 # 程序图标和局域网网页都相对于脚本目录定位，源码与打包环境均可读取。
 APP_ROOT = Path(__file__).resolve().parent
 MODEL_PATH = APP_ROOT / MODEL_NAME
-ICON_PATH = APP_ROOT / "icon" / "icon.png"
+# 源码目录中的图标位于项目根目录；打包后则位于应用资源根目录。
+PACKAGED_ICON_PATH = APP_ROOT / "icon" / "icon.png"
+SOURCE_ICON_PATH = APP_ROOT.parent / "icon" / "icon.png"
+ICON_PATH = (
+    PACKAGED_ICON_PATH
+    if PACKAGED_ICON_PATH.is_file()
+    else SOURCE_ICON_PATH
+)
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 8765
 WEB_ROOT = APP_ROOT / "web"

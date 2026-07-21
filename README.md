@@ -97,10 +97,10 @@ python -m pip install lapx
 请在项目根目录运行：
 
 ```bash
-python AlertZone_app.py
+python src/AlertZone_app.py
 ```
 
-项目已包含 `yolo11n.pt` 模型文件，无需在每次启动时重新下载。
+项目已包含 `src/yolo11n.pt` 模型文件，无需在每次启动时重新下载。
 
 ## 🚀 使用说明
 
@@ -142,19 +142,25 @@ python AlertZone_app.py
 
 ### 项目文件
 
-- `AlertZone_app.py`：桌面界面、人体检测、跟踪和局域网服务
-- `web/index.html`：局域网状态与告警页面
-- `yolo11n.pt`：YOLO 人体检测模型
+- `src/AlertZone_app.py`：桌面界面、人体检测、跟踪和局域网服务
+- `src/web/index.html`：局域网状态与告警页面
+- `src/yolo11n.pt`：YOLO 人体检测模型
+- `src/dev_preview.py`：开发阶段的界面自动重启脚本
 - `icon/`：Windows、macOS 和运行时图标
 - `requirements.txt`：Python 运行依赖
-- `dev_preview.py`：开发阶段的界面自动重启脚本
 
 ### 源码调试
 
 主程序入口：
 
 ```bash
-python AlertZone_app.py
+python src/AlertZone_app.py
+```
+
+自动刷新预览：
+
+```bash
+python src/dev_preview.py
 ```
 
 项目使用的核心组件：
@@ -174,18 +180,20 @@ AlertZone 使用 PyInstaller 打包。PyInstaller 不是跨平台编译器：Win
 
 ```text
 AlertZone/
-├── AlertZone_app.py
 ├── requirements.txt
-├── yolo11n.pt
 ├── icon/
 │   ├── icon.png
 │   ├── icon.ico
 │   └── icon.icns
-└── web/
-    └── index.html
+└── src/
+    ├── AlertZone_app.py
+    ├── dev_preview.py
+    ├── yolo11n.pt
+    └── web/
+        └── index.html
 ```
 
-PyInstaller 会把 `--add-data` 指定的资源放进应用包。程序必须相对于 `__file__` 查找这些资源，而不能依赖启动时的工作目录。打包前请确认 `AlertZone_app.py` 使用以下方式定位模型：
+PyInstaller 会把 `--add-data` 指定的资源放进应用包。程序必须相对于 `__file__` 查找这些资源，而不能依赖启动时的工作目录。打包前请确认 `src/AlertZone_app.py` 使用以下方式定位模型：
 
 ```python
 APP_ROOT = Path(__file__).resolve().parent
@@ -203,7 +211,7 @@ model = YOLO(str(MODEL_PATH))
 每次正式打包前先运行源码：
 
 ```bash
-python AlertZone_app.py
+python src/AlertZone_app.py
 ```
 
 实际检查摄像头、人体框、ByteTrack 编号、范围识别、局域网页面和实时预览均可正常工作，再继续打包。
@@ -230,7 +238,7 @@ python -m pip install --upgrade pyinstaller pyinstaller-hooks-contrib
 
 ```bat
 python -c "import cv2, torch, ultralytics, PySide6; print('Dependencies OK')"
-python AlertZone_app.py
+python src\AlertZone_app.py
 ```
 
 #### 2. 构建文件夹版（推荐）
@@ -246,11 +254,11 @@ python -m PyInstaller ^
   --name AlertZone ^
   --icon "icon\icon.ico" ^
   --add-data "icon\icon.png:icon" ^
-  --add-data "yolo11n.pt:." ^
-  --add-data "web:web" ^
+  --add-data "src\yolo11n.pt:." ^
+  --add-data "src\web:web" ^
   --collect-all ultralytics ^
   --copy-metadata ultralytics ^
-  AlertZone_app.py
+  src\AlertZone_app.py
 ```
 
 生成结果：
@@ -287,11 +295,11 @@ python -m PyInstaller ^
   --name AlertZone ^
   --icon "icon\icon.ico" ^
   --add-data "icon\icon.png:icon" ^
-  --add-data "yolo11n.pt:." ^
-  --add-data "web:web" ^
+  --add-data "src\yolo11n.pt:." ^
+  --add-data "src\web:web" ^
   --collect-all ultralytics ^
   --copy-metadata ultralytics ^
-  AlertZone_app.py
+  src\AlertZone_app.py
 ```
 
 生成结果：
@@ -336,7 +344,7 @@ python -m pip install --upgrade pyinstaller pyinstaller-hooks-contrib
 ```bash
 python -c "import platform; print(platform.machine())"
 python -c "import cv2, torch, ultralytics, PySide6; print('Dependencies OK')"
-python AlertZone_app.py
+python src/AlertZone_app.py
 ```
 
 首次运行时，在“系统设置 → 隐私与安全性 → 摄像头”中允许当前终端访问摄像头。
@@ -353,11 +361,11 @@ python -m PyInstaller \
   --icon "icon/icon.icns" \
   --osx-bundle-identifier "com.hknight.alertzone" \
   --add-data "icon/icon.png:icon" \
-  --add-data "yolo11n.pt:." \
-  --add-data "web:web" \
+  --add-data "src/yolo11n.pt:." \
+  --add-data "src/web:web" \
   --collect-all ultralytics \
   --copy-metadata ultralytics \
-  AlertZone_app.py
+  src/AlertZone_app.py
 ```
 
 生成结果：
@@ -393,8 +401,8 @@ open "dist/AlertZone.app"
 ### 常见打包问题
 
 - **双击后立即退出**：临时移除 `--windowed` 后重新构建，从终端运行并查看完整错误。
-- **找不到 `yolo11n.pt`**：确认模型通过 `APP_ROOT / "yolo11n.pt"` 定位，并保留 `--add-data "yolo11n.pt:."`。
-- **找不到 `web/index.html` 或图标**：检查对应 `--add-data` 参数和应用包中的资源目录。
+- **找不到 `yolo11n.pt`**：确认模型通过 `APP_ROOT / "yolo11n.pt"` 定位，并保留 `--add-data "src/yolo11n.pt:."`。
+- **找不到 `web/index.html` 或图标**：检查 `--add-data "src/web:web"`、图标参数和应用包中的资源目录。
 - **提示缺少 `lap`**：在打包环境执行 `python -m pip install lapx` 后清理并重新构建。
 - **缺少 Ultralytics 模块或配置文件**：升级 PyInstaller hooks，并保留 `--collect-all ultralytics` 与 `--copy-metadata ultralytics`。
 - **Windows 无法打开摄像头**：检查系统摄像头隐私权限，并确认摄像头未被其他软件占用。
