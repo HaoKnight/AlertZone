@@ -37,6 +37,7 @@ from PySide6.QtGui import (
     QIcon,
     QImage,
     QPainter,
+    QPainterPath,
     QPen,
     QPixmap,
 )
@@ -1198,7 +1199,19 @@ class CameraScanWorker(QThread):
 
 # ---------- 始终带清晰边框的复选框 ----------
 class FramedCheckBox(QCheckBox):
-    """保留系统对勾，并为 Windows 补画清晰的方框。"""
+    """在 Windows 上统一绘制边框和居中的对勾。"""
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        # 隐藏系统自带的指示图形，但保留固定空间供自绘内容使用。
+        self.setStyleSheet("""
+            QCheckBox::indicator {
+                width: 16px;
+                height: 16px;
+                background: transparent;
+                border: none;
+            }
+        """)
 
     def paintEvent(self, event: Any) -> None:
         super().paintEvent(event)
@@ -1219,6 +1232,26 @@ class FramedCheckBox(QCheckBox):
         painter.setPen(QPen(border_color, 1))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRoundedRect(indicator_rect, 3, 3)
+
+        if self.checkState() == Qt.CheckState.Checked:
+            check_pen = QPen(border_color, 2)
+            check_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            check_pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            painter.setPen(check_pen)
+            check_path = QPainterPath()
+            check_path.moveTo(
+                indicator_rect.left() + indicator_rect.width() * 0.22,
+                indicator_rect.top() + indicator_rect.height() * 0.52,
+            )
+            check_path.lineTo(
+                indicator_rect.left() + indicator_rect.width() * 0.43,
+                indicator_rect.top() + indicator_rect.height() * 0.73,
+            )
+            check_path.lineTo(
+                indicator_rect.left() + indicator_rect.width() * 0.79,
+                indicator_rect.top() + indicator_rect.height() * 0.27,
+            )
+            painter.drawPath(check_path)
 
 
 # macOS 使用系统原生外观，只有 Windows 需要额外补画边框。
