@@ -2647,6 +2647,21 @@ class CameraWindow(QMainWindow):
         else:
             self.status_label.setText(f"发现 {len(camera_indexes)} 个摄像头")
 
+        # Windows 中文字体通常更宽，根据最长选项动态保证完整显示。
+        longest_text_width = max(
+            (
+                self.camera_combo.fontMetrics().horizontalAdvance(
+                    self.camera_combo.itemText(index)
+                )
+                for index in range(self.camera_combo.count())
+            ),
+            default=0,
+        )
+        self.camera_combo.setMinimumWidth(
+            max(70, longest_text_width + 26)
+        )
+        self._update_status_bar_layout()
+
         if selected_index is not None:
             restored = self.camera_combo.findData(selected_index)
             if restored >= 0:
