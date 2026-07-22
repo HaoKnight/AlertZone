@@ -612,11 +612,11 @@
       <div class="settings">
         <div class="alert-settings">
           <label class="compact-toggle alert-switch">
-            <input id="alertEnabled" type="checkbox" checked>
+            <input id="alertEnabled" type="checkbox">
             <span>启用警告</span>
           </label>
           <label class="compact-toggle continuous-switch">
-            <input id="continuousDetectionEnabled" type="checkbox" checked>
+            <input id="continuousDetectionEnabled" type="checkbox">
             <span>连续检测</span>
           </label>
           <label class="compact-toggle preview-switch">
@@ -776,7 +776,7 @@
 
     alertEnabled.checked = localStorage.getItem("cameraAlertEnabled") !== "false";
     continuousDetectionEnabled.checked =
-      localStorage.getItem("cameraContinuousDetectionEnabled") !== "false";
+      localStorage.getItem("cameraContinuousDetectionEnabled") === "true";
     livePreviewEnabled.checked =
       localStorage.getItem("cameraLivePreviewEnabled") === "true";
     const savedAlertMethod = localStorage.getItem("cameraAlertMethod");
