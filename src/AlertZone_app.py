@@ -85,6 +85,7 @@ WEB_PORT = 8765
 WEB_ROOT = APP_ROOT / "web"
 WEB_PREVIEW_INTERVAL_SECONDS = 0.08
 WEB_PREVIEW_REQUEST_TTL_SECONDS = 1.2
+WEB_PREVIEW_STOP_TOMBSTONE_SECONDS = 10.0
 WEB_PREVIEW_STREAM_WAIT_SECONDS = 0.5
 WEB_PREVIEW_MAX_WIDTH = 1280
 
@@ -136,7 +137,9 @@ class LanDetectionState:
         self._alert_confirm_seconds = ALERT_CONFIRM_SECONDS
         self._preview_jpeg: bytes | None = None
         self._preview_updated_at: float | None = None
-        self._preview_requested_at = 0.0
+        self._preview_viewer_deadlines: dict[str, float] = {}
+        self._stopped_preview_viewer_deadlines: dict[str, float] = {}
+        self._preview_single_request_deadline = 0.0
         self._preview_sequence = 0
 
     def set_running(self, running: bool, status: str) -> None:
@@ -148,7 +151,7 @@ class LanDetectionState:
             # 开始或停止一次检测时清除旧画面，避免网页显示上一轮的帧。
             self._preview_jpeg = None
             self._preview_updated_at = None
-            self._preview_requested_at = 0.0
+            self._preview_single_request_deadline = 0.0
             if not running:
                 self._people_count = 0
                 self._fps = 0.0
@@ -247,13 +250,73 @@ class LanDetectionState:
             return self._intruder_jpeg
 
     def preview_requested_recently(self) -> bool:
-        """网页持续请求预览时，才允许检测线程编码实时画面。"""
+        """仅有网页预览租约存活时，才允许检测线程编码画面。"""
+        now = time.time()
         with self._lock:
+            self._remove_expired_preview_viewers(now)
             return (
                 self._running
-                and time.time() - self._preview_requested_at
-                <= WEB_PREVIEW_REQUEST_TTL_SECONDS
+                and (
+                    bool(self._preview_viewer_deadlines)
+                    or now <= self._preview_single_request_deadline
+                )
             )
+
+    def start_preview_viewer(self, viewer_id: str) -> bool:
+        """建立一个网页预览会话；已停止的旧编号不得复活。"""
+        with self._preview_condition:
+            now = time.time()
+            self._remove_expired_preview_viewers(now)
+            if viewer_id in self._stopped_preview_viewer_deadlines:
+                return False
+            self._preview_viewer_deadlines[viewer_id] = (
+                now + WEB_PREVIEW_REQUEST_TTL_SECONDS
+            )
+            self._preview_condition.notify_all()
+            return True
+
+    def renew_preview_viewer(self, viewer_id: str) -> bool:
+        """续期网页预览会话，但不复活已显式停止的旧会话。"""
+        with self._preview_condition:
+            now = time.time()
+            self._remove_expired_preview_viewers(now)
+            if viewer_id in self._stopped_preview_viewer_deadlines:
+                return False
+            self._preview_viewer_deadlines[viewer_id] = (
+                now + WEB_PREVIEW_REQUEST_TTL_SECONDS
+            )
+            self._preview_condition.notify_all()
+            return True
+
+    def stop_preview_viewer(self, viewer_id: str) -> None:
+        """立即停止一个网页预览会话。"""
+        with self._preview_condition:
+            now = time.time()
+            self._remove_expired_preview_viewers(now)
+            self._preview_viewer_deadlines.pop(viewer_id, None)
+            # 拦住已在网络途中的旧心跳或 GET，避免关闭后又复活。
+            self._stopped_preview_viewer_deadlines[viewer_id] = (
+                now + WEB_PREVIEW_STOP_TOMBSTONE_SECONDS
+            )
+            self._preview_condition.notify_all()
+
+    def _remove_expired_preview_viewers(self, now: float) -> None:
+        """清理没有心跳的网页；调用方必须已持有状态锁。"""
+        expired_viewers = [
+            viewer_id
+            for viewer_id, deadline in self._preview_viewer_deadlines.items()
+            if deadline < now
+        ]
+        for viewer_id in expired_viewers:
+            del self._preview_viewer_deadlines[viewer_id]
+        stopped_viewers = self._stopped_preview_viewer_deadlines
+        expired_stopped_viewers = [
+            viewer_id
+            for viewer_id, deadline in stopped_viewers.items()
+            if deadline < now
+        ]
+        for viewer_id in expired_stopped_viewers:
+            del self._stopped_preview_viewer_deadlines[viewer_id]
 
     def update_preview_image(self, jpeg: bytes) -> None:
         """保存最新一张带检测框的网页预览帧。"""
@@ -266,35 +329,46 @@ class LanDetectionState:
             self._preview_condition.notify_all()
 
     def request_preview_image(self) -> bytes | None:
-        """登记网页预览需求，并返回当前可用的最新帧。"""
+        """登记一次性预览需求，并返回当前可用的最新帧。"""
         with self._lock:
-            self._preview_requested_at = time.time()
+            self._preview_single_request_deadline = (
+                time.time() + WEB_PREVIEW_REQUEST_TTL_SECONDS
+            )
             if not self._running:
                 return None
             return self._preview_jpeg
 
     def wait_for_preview_image(
         self,
+        viewer_id: str,
         last_sequence: int,
         timeout: float,
-    ) -> tuple[bytes | None, int]:
+    ) -> tuple[bytes | None, int, bool]:
         """等待新预览帧，供 MJPEG 长连接按产生速度持续推送。"""
         with self._preview_condition:
-            self._preview_requested_at = time.time()
-            if (
-                self._preview_jpeg is None
-                or self._preview_sequence <= last_sequence
-            ):
-                self._preview_condition.wait(timeout)
+            now = time.time()
+            self._remove_expired_preview_viewers(now)
+            viewer_deadline = self._preview_viewer_deadlines.get(viewer_id)
+            if viewer_deadline is None:
+                return None, last_sequence, False
 
-            # 等待期间也作为预览心跳，避免检测线程停止编码。
-            self._preview_requested_at = time.time()
             if (
                 self._preview_jpeg is None
                 or self._preview_sequence <= last_sequence
             ):
-                return None, last_sequence
-            return self._preview_jpeg, self._preview_sequence
+                self._preview_condition.wait(
+                    min(timeout, max(viewer_deadline - now, 0.0))
+                )
+
+            self._remove_expired_preview_viewers(time.time())
+            if viewer_id not in self._preview_viewer_deadlines:
+                return None, last_sequence, False
+            if (
+                self._preview_jpeg is None
+                or self._preview_sequence <= last_sequence
+            ):
+                return None, last_sequence, True
+            return self._preview_jpeg, self._preview_sequence, True
 
 
 def local_network_ip() -> str:
@@ -384,7 +458,15 @@ class LanRequestHandler(BaseHTTPRequestHandler):
             return
 
         if request.path == "/api/preview.mjpg":
-            self._serve_mjpeg()
+            viewer_id = self._preview_viewer_id(request)
+            if viewer_id is None:
+                self._send_bytes(
+                    400,
+                    b"Missing or invalid preview viewer id",
+                    "text/plain; charset=utf-8",
+                )
+                return
+            self._serve_mjpeg(viewer_id)
             return
 
         if request.path == "/api/preview.jpg":
@@ -408,6 +490,27 @@ class LanRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         request = urlparse(self.path)
+        if request.path in (
+            "/api/preview/heartbeat",
+            "/api/preview/stop",
+        ):
+            viewer_id = self._preview_viewer_id(request)
+            if viewer_id is None:
+                self._send_bytes(
+                    400,
+                    b"Missing or invalid preview viewer id",
+                    "text/plain; charset=utf-8",
+                )
+                return
+
+            state = self.app_server.detection_state  # type: ignore[attr-defined]
+            if request.path == "/api/preview/heartbeat":
+                state.renew_preview_viewer(viewer_id)
+            else:
+                state.stop_preview_viewer(viewer_id)
+            self._send_bytes(204, b"", "text/plain; charset=utf-8")
+            return
+
         if request.path == "/api/rearm-alert":
             state = self.app_server.detection_state  # type: ignore[attr-defined]
             confirm_values = parse_qs(request.query).get(
@@ -460,9 +563,38 @@ class LanRequestHandler(BaseHTTPRequestHandler):
 
         self._send_bytes(404, b"Not found", "text/plain; charset=utf-8")
 
-    def _serve_mjpeg(self) -> None:
+    @staticmethod
+    def _preview_viewer_id(request: Any) -> str | None:
+        """只接受短 ASCII 会话编号，避免无限制占用后端状态。"""
+        viewer_values = parse_qs(
+            request.query,
+            keep_blank_values=True,
+        ).get("viewer", [])
+        if len(viewer_values) != 1:
+            return None
+        viewer_id = viewer_values[0]
+        if not 1 <= len(viewer_id) <= 128:
+            return None
+        if not all(
+            character.isascii()
+            and (character.isalnum() or character in "-_.")
+            for character in viewer_id
+        ):
+            return None
+        return viewer_id
+
+    def _serve_mjpeg(self, viewer_id: str) -> None:
         """保持一个 HTTP 连接，持续推送最新的带框 JPEG 帧。"""
         try:
+            state = self.app_server.detection_state  # type: ignore[attr-defined]
+            # GET 本身先建立一个短租约，之后必须由网页心跳续期。
+            if not state.start_preview_viewer(viewer_id):
+                self._send_bytes(
+                    410,
+                    b"Preview viewer was stopped",
+                    "text/plain; charset=utf-8",
+                )
+                return
             self.send_response(200)
             self.send_header(
                 "Content-Type",
@@ -476,12 +608,14 @@ class LanRequestHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
             last_sequence = -1
-            state = self.app_server.detection_state  # type: ignore[attr-defined]
             while not self.app_server.shutdown_event.is_set():
-                image, sequence = state.wait_for_preview_image(
+                image, sequence, viewer_active = state.wait_for_preview_image(
+                    viewer_id,
                     last_sequence,
                     WEB_PREVIEW_STREAM_WAIT_SECONDS,
                 )
+                if not viewer_active:
+                    break
                 if image is None:
                     # 没有检测画面时发送空白心跳，以便及时发现浏览器已断开。
                     self.wfile.write(b"\r\n")

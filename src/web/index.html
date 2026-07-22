@@ -715,6 +715,7 @@
     const ALERT_TIMEOUT_OPTIONS_SECONDS = [0, 5, 10, 15, 30, 60];
     const PREVIEW_RECONNECT_DELAY_MS = 700;
     const PREVIEW_READY_CHECK_MS = 100;
+    const PREVIEW_HEARTBEAT_INTERVAL_MS = 500;
     const alertEnabled = document.querySelector("#alertEnabled");
     const continuousDetectionEnabled = document.querySelector(
       "#continuousDetectionEnabled"
@@ -756,8 +757,12 @@
     let polling = false;
     let previewReconnectTimer = null;
     let previewReadyTimer = null;
+    let previewHeartbeatTimer = null;
+    let previewViewerId = "";
     let previewGeneration = 0;
     let alertPreviewReconnectTimer = null;
+    let alertPreviewHeartbeatTimer = null;
+    let alertPreviewViewerId = "";
     let alertPreviewGeneration = 0;
     let alertRearmNotBefore = 0;
     let alertEnabledNotBefore = 0;
@@ -934,6 +939,102 @@
         : DEFAULT_ALERT_CONFIRM_SECONDS;
     }
 
+    function createPreviewViewerId(kind) {
+      const randomPart = Math.random().toString(36).slice(2);
+      return `${kind}-${Date.now().toString(36)}-${randomPart}`;
+    }
+
+    function renewPreviewLease(viewerId) {
+      void fetch(
+        `/api/preview/heartbeat?viewer=${encodeURIComponent(viewerId)}`,
+        {
+          method: "POST",
+          cache: "no-store",
+        }
+      ).catch(() => {
+        // 长连接自身会负责重连，心跳失败时继续下次尝试。
+      });
+    }
+
+    function releasePreviewLease(viewerId, useBeacon = false) {
+      if (!viewerId) {
+        return;
+      }
+      const url =
+        `/api/preview/stop?viewer=${encodeURIComponent(viewerId)}`;
+      if (
+        useBeacon &&
+        typeof navigator.sendBeacon === "function" &&
+        navigator.sendBeacon(url, "")
+      ) {
+        return;
+      }
+      void fetch(url, {
+        method: "POST",
+        cache: "no-store",
+        keepalive: true,
+      }).catch(() => {
+        // 页面已离开时租约也会在后端自动过期。
+      });
+    }
+
+    function startLivePreviewHeartbeat(generation, viewerId) {
+      const renew = () => {
+        if (
+          !livePreviewEnabled.checked ||
+          generation !== previewGeneration ||
+          viewerId !== previewViewerId
+        ) {
+          return;
+        }
+        renewPreviewLease(viewerId);
+        previewHeartbeatTimer = window.setTimeout(
+          renew,
+          PREVIEW_HEARTBEAT_INTERVAL_MS
+        );
+      };
+      renew();
+    }
+
+    function stopLivePreviewHeartbeat(useBeacon = false) {
+      if (previewHeartbeatTimer !== null) {
+        window.clearTimeout(previewHeartbeatTimer);
+        previewHeartbeatTimer = null;
+      }
+      const viewerId = previewViewerId;
+      previewViewerId = "";
+      releasePreviewLease(viewerId, useBeacon);
+    }
+
+    function startAlertPreviewHeartbeat(generation, viewerId) {
+      const renew = () => {
+        if (
+          !alertIsOpen ||
+          alertMethod.value !== "live-red" ||
+          generation !== alertPreviewGeneration ||
+          viewerId !== alertPreviewViewerId
+        ) {
+          return;
+        }
+        renewPreviewLease(viewerId);
+        alertPreviewHeartbeatTimer = window.setTimeout(
+          renew,
+          PREVIEW_HEARTBEAT_INTERVAL_MS
+        );
+      };
+      renew();
+    }
+
+    function stopAlertPreviewHeartbeat(useBeacon = false) {
+      if (alertPreviewHeartbeatTimer !== null) {
+        window.clearTimeout(alertPreviewHeartbeatTimer);
+        alertPreviewHeartbeatTimer = null;
+      }
+      const viewerId = alertPreviewViewerId;
+      alertPreviewViewerId = "";
+      releasePreviewLease(viewerId, useBeacon);
+    }
+
     function setLivePreview(enabled) {
       previewGeneration += 1;
       const generation = previewGeneration;
@@ -949,6 +1050,7 @@
       livePreviewImage.onload = null;
       livePreviewImage.onerror = null;
       livePreviewImage.removeAttribute("src");
+      stopLivePreviewHeartbeat();
 
       if (!enabled) {
         livePreviewImage.classList.add("hidden");
@@ -956,13 +1058,16 @@
         return;
       }
 
-      openLivePreviewStream(generation);
+      previewViewerId = createPreviewViewerId("live");
+      startLivePreviewHeartbeat(generation, previewViewerId);
+      openLivePreviewStream(generation, previewViewerId);
     }
 
-    function openLivePreviewStream(generation) {
+    function openLivePreviewStream(generation, viewerId) {
       if (
         !livePreviewEnabled.checked ||
-        generation !== previewGeneration
+        generation !== previewGeneration ||
+        viewerId !== previewViewerId
       ) {
         return;
       }
@@ -974,7 +1079,10 @@
       monitorContent.classList.remove("hidden");
 
       livePreviewImage.onerror = () => {
-        if (generation !== previewGeneration) {
+        if (
+          generation !== previewGeneration ||
+          viewerId !== previewViewerId
+        ) {
           return;
         }
         livePreviewImage.classList.add("hidden");
@@ -985,12 +1093,13 @@
         }
         // 局域网服务短暂重启时自动重新建立 MJPEG 长连接。
         previewReconnectTimer = window.setTimeout(
-          () => openLivePreviewStream(generation),
+          () => openLivePreviewStream(generation, viewerId),
           PREVIEW_RECONNECT_DELAY_MS
         );
       };
       livePreviewImage.src =
-        `/api/preview.mjpg?time=${Date.now()}&generation=${generation}`;
+        `/api/preview.mjpg?viewer=${encodeURIComponent(viewerId)}` +
+        `&time=${Date.now()}&generation=${generation}`;
       checkLivePreviewReady(generation);
     }
 
@@ -1026,16 +1135,20 @@
 
       alertLivePreview.onerror = null;
       alertLivePreview.removeAttribute("src");
+      stopAlertPreviewHeartbeat();
       if (enabled) {
-        openAlertLivePreviewStream(generation);
+        alertPreviewViewerId = createPreviewViewerId("alert");
+        startAlertPreviewHeartbeat(generation, alertPreviewViewerId);
+        openAlertLivePreviewStream(generation, alertPreviewViewerId);
       }
     }
 
-    function openAlertLivePreviewStream(generation) {
+    function openAlertLivePreviewStream(generation, viewerId) {
       if (
         !alertIsOpen ||
         alertMethod.value !== "live-red" ||
-        generation !== alertPreviewGeneration
+        generation !== alertPreviewGeneration ||
+        viewerId !== alertPreviewViewerId
       ) {
         return;
       }
@@ -1045,19 +1158,21 @@
       alertLivePreview.onerror = () => {
         if (
           !alertIsOpen ||
-          generation !== alertPreviewGeneration
+          generation !== alertPreviewGeneration ||
+          viewerId !== alertPreviewViewerId
         ) {
           return;
         }
         alertLivePreview.removeAttribute("src");
         // 告警期间局域网服务短暂重启时，自动恢复实时预览连接。
         alertPreviewReconnectTimer = window.setTimeout(
-          () => openAlertLivePreviewStream(generation),
+          () => openAlertLivePreviewStream(generation, viewerId),
           PREVIEW_RECONNECT_DELAY_MS
         );
       };
       alertLivePreview.src =
-        `/api/preview.mjpg?time=${Date.now()}&alertGeneration=${generation}`;
+        `/api/preview.mjpg?viewer=${encodeURIComponent(viewerId)}` +
+        `&time=${Date.now()}&alertGeneration=${generation}`;
     }
 
     function renderStatus(data) {
@@ -1345,6 +1460,31 @@
         polling = false;
       }
     }
+
+    function suspendPreviewStreams() {
+      previewGeneration += 1;
+      alertPreviewGeneration += 1;
+      livePreviewImage.onload = null;
+      livePreviewImage.onerror = null;
+      livePreviewImage.removeAttribute("src");
+      alertLivePreview.onerror = null;
+      alertLivePreview.removeAttribute("src");
+      stopLivePreviewHeartbeat(true);
+      stopAlertPreviewHeartbeat(true);
+    }
+
+    window.addEventListener("pagehide", suspendPreviewStreams);
+    window.addEventListener("pageshow", (event) => {
+      if (!event.persisted) {
+        return;
+      }
+      if (livePreviewEnabled.checked) {
+        setLivePreview(true);
+      }
+      if (alertIsOpen && alertMethod.value === "live-red") {
+        setAlertLivePreview(true);
+      }
+    });
 
     void requestAlertRearm();
     window.setInterval(pollStatus, POLL_INTERVAL_MS);
