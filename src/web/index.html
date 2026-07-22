@@ -774,7 +774,8 @@
     let presenceDisplayStartedAt = null;
     let waitForPersonToLeave = false;
 
-    alertEnabled.checked = localStorage.getItem("cameraAlertEnabled") !== "false";
+    alertEnabled.checked =
+      localStorage.getItem("cameraAlertEnabled") === "true";
     continuousDetectionEnabled.checked =
       localStorage.getItem("cameraContinuousDetectionEnabled") === "true";
     livePreviewEnabled.checked =
