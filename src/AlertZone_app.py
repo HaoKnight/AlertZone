@@ -1253,7 +1253,7 @@ class CameraWorker(QThread):
                     persist=True,
                     tracker=TRACKER_NAME,
                     classes=[PERSON_CLASS_ID],
-                    conf=0.5,
+                    conf=0.2,
                     imgsz=640,
                     device=inference_device,
                     verbose=False,
