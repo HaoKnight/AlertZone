@@ -138,10 +138,10 @@ def select_inference_device() -> tuple[str, str]:
 
 
 def open_camera(camera_index: int) -> cv2.VideoCapture:
-    """按平台选择稳定的视频后端；Windows 优先避开易失效的 MSMF。"""
+    """按平台打开摄像头；Windows 保持原有 MSMF 性能并以 DSHOW 后备。"""
     camera = cv2.VideoCapture()
     backends = (
-        (cv2.CAP_DSHOW, cv2.CAP_MSMF)
+        (cv2.CAP_MSMF, cv2.CAP_DSHOW)
         if sys.platform == "win32"
         else (cv2.CAP_ANY,)
     )
