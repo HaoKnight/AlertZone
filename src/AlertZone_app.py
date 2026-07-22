@@ -45,9 +45,11 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
@@ -82,12 +84,32 @@ ICON_PATH = (
 )
 WEB_HOST = "0.0.0.0"
 WEB_PORT = 8765
+LAN_CLIENT_TTL_SECONDS = 3.5
 WEB_ROOT = APP_ROOT / "web"
 WEB_PREVIEW_INTERVAL_SECONDS = 0.08
 WEB_PREVIEW_REQUEST_TTL_SECONDS = 1.2
 WEB_PREVIEW_STOP_TOMBSTONE_SECONDS = 10.0
 WEB_PREVIEW_STREAM_WAIT_SECONDS = 0.5
 WEB_PREVIEW_MAX_WIDTH = 1280
+
+# OpenCV 没有跨平台的“支持分辨率”枚举接口，因此扫描时逐一请求常见
+# 视频模式，并只保留能够实际读出完全相同尺寸画面的模式。
+CAMERA_RESOLUTION_CANDIDATES = (
+    (320, 240),
+    (640, 360),
+    (640, 480),
+    (800, 600),
+    (1024, 576),
+    (1024, 768),
+    (1280, 720),
+    (1280, 960),
+    (1280, 1024),
+    (1600, 900),
+    (1920, 1080),
+    (2560, 1440),
+    (3840, 2160),
+)
+DEFAULT_CAMERA_RESOLUTION = (1280, 720)
 
 # 使用系统原生位置保存桌面客户端设置，升级项目代码时不会丢失。
 SETTINGS_ORGANIZATION = "CameraMonitor"
@@ -141,6 +163,35 @@ class LanDetectionState:
         self._stopped_preview_viewer_deadlines: dict[str, float] = {}
         self._preview_single_request_deadline = 0.0
         self._preview_sequence = 0
+        self._online_clients: dict[str, float] = {}
+
+    def touch_client(self, address: str) -> None:
+        """记录网页设备心跳；同一 IP 的多个页面只计为一台设备。"""
+        now = time.time()
+        with self._lock:
+            self._online_clients[address] = now + LAN_CLIENT_TTL_SECONDS
+            self._remove_expired_clients(now)
+
+    def online_client_count(self) -> int:
+        """返回最近仍持续轮询状态接口的局域网设备数。"""
+        now = time.time()
+        with self._lock:
+            self._remove_expired_clients(now)
+            return len(self._online_clients)
+
+    def clear_online_clients(self) -> None:
+        """局域网服务停止时立即清空网页设备计数。"""
+        with self._lock:
+            self._online_clients.clear()
+
+    def _remove_expired_clients(self, now: float) -> None:
+        expired = [
+            address
+            for address, deadline in self._online_clients.items()
+            if deadline <= now
+        ]
+        for address in expired:
+            self._online_clients.pop(address, None)
 
     def set_running(self, running: bool, status: str) -> None:
         """更新本地检测是否运行；停止时同时清除当前在场状态。"""
@@ -431,6 +482,9 @@ class LanRequestHandler(BaseHTTPRequestHandler):
             return
 
         if request.path == "/api/status":
+            self.app_server.detection_state.touch_client(  # type: ignore[attr-defined]
+                str(self.client_address[0])
+            )
             state = self.app_server.detection_state.snapshot()  # type: ignore[attr-defined]
             payload = json.dumps(
                 state,
@@ -1027,6 +1081,7 @@ class CameraWorker(QThread):
     def __init__(
         self,
         camera_index: int,
+        camera_name: str,
         mirror: bool,
         frame_width: int,
         frame_height: int,
@@ -1037,6 +1092,7 @@ class CameraWorker(QThread):
     ) -> None:
         super().__init__(parent)
         self.camera_index = camera_index
+        self.camera_name = camera_name
         self.mirror = mirror
         self.frame_width = frame_width
         self.frame_height = frame_height
@@ -1101,7 +1157,7 @@ class CameraWorker(QThread):
             model.to(inference_device)
 
             # 使用 OpenCV 打开指定编号的摄像头，并请求界面中选择的分辨率。
-            self.status_changed.emit(f"正在打开摄像头 {self.camera_index}…")
+            self.status_changed.emit(f"正在打开{self.camera_name}…")
             camera = cv2.VideoCapture(self.camera_index)
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
@@ -1110,13 +1166,25 @@ class CameraWorker(QThread):
 
             if not camera.isOpened():
                 raise RuntimeError(
-                    f"无法打开摄像头 {self.camera_index}。"
+                    f"无法打开{self.camera_name}。"
                     "请检查摄像头是否被占用，以及 VS Code/Python 的摄像头权限。"
                 )
 
-            # 摄像头可能不支持请求值，因此读取并显示最终采用的实际分辨率。
-            actual_width = int(camera.get(cv2.CAP_PROP_FRAME_WIDTH))
-            actual_height = int(camera.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            # 扫描阶段已经验证过该模式；启动时再次以实际帧严格确认，防止
+            # 驱动静默回退到其他尺寸却仍在界面上显示为已选分辨率。
+            initial_ok, initial_frame = camera.read()
+            if not initial_ok or initial_frame is None:
+                raise RuntimeError("无法读取摄像头画面。")
+            actual_height, actual_width = initial_frame.shape[:2]
+            if (actual_width, actual_height) != (
+                self.frame_width,
+                self.frame_height,
+            ):
+                raise RuntimeError(
+                    f"{self.camera_name}未能提供请求的 "
+                    f"{self.frame_width}×{self.frame_height} 分辨率，"
+                    f"实际返回 {actual_width}×{actual_height}。请刷新摄像头列表。"
+                )
             self.runtime_info_changed.emit(
                 "视频分辨率："
                 f"{actual_width}×{actual_height}"
@@ -1135,11 +1203,16 @@ class CameraWorker(QThread):
                 else 0
             )
             detection_region_generation = self.detection_region_state()[2]
+            pending_frame: Any = initial_frame
 
             while self._running:
-                ok, frame = camera.read()
-                if not ok:
-                    raise RuntimeError("无法继续读取摄像头画面。")
+                if pending_frame is not None:
+                    frame = pending_frame
+                    pending_frame = None
+                else:
+                    ok, frame = camera.read()
+                    if not ok:
+                        raise RuntimeError("无法继续读取摄像头画面。")
 
                 if self.mirror_enabled():
                     frame = cv2.flip(frame, 1)
@@ -1294,7 +1367,7 @@ class CameraWorker(QThread):
 
 # ---------- 本地摄像头扫描线程 ----------
 class CameraScanWorker(QThread):
-    """在后台扫描常见的本地摄像头索引，避免扫描时卡住界面。"""
+    """在后台扫描摄像头名称及经实际取帧验证的分辨率。"""
 
     cameras_found = Signal(object)
 
@@ -1308,7 +1381,8 @@ class CameraScanWorker(QThread):
 
     def run(self) -> None:
         """QThread 的线程入口；耗时任务在这里执行，不阻塞主界面。"""
-        camera_indexes: list[int] = []
+        camera_profiles: list[dict[str, Any]] = []
+        camera_metadata = self._camera_metadata()
 
         # OpenCV 没有统一的摄像头枚举接口，因此依次探测常用索引 0～5。
         for index in range(self.max_camera_count):
@@ -1318,12 +1392,104 @@ class CameraScanWorker(QThread):
             camera = cv2.VideoCapture(index)
             try:
                 if camera.isOpened():
-                    camera_indexes.append(index)
+                    metadata = (
+                        camera_metadata[index]
+                        if index < len(camera_metadata)
+                        else None
+                    )
+                    advertised_resolutions = (
+                        metadata["resolutions"] if metadata else []
+                    )
+                    resolutions = self._supported_resolutions(
+                        camera,
+                        advertised_resolutions,
+                    )
+                    if resolutions:
+                        name = metadata["name"] if metadata else "摄像头"
+                        camera_profiles.append(
+                            {
+                                "index": index,
+                                "name": name,
+                                "resolutions": resolutions,
+                            }
+                        )
             finally:
                 camera.release()
 
         if self._running:
-            self.cameras_found.emit(camera_indexes)
+            self.cameras_found.emit(camera_profiles)
+
+    @staticmethod
+    def _camera_metadata() -> list[dict[str, Any]]:
+        """通过系统多媒体接口获取设备名称及驱动公布的视频尺寸。"""
+        try:
+            from PySide6.QtMultimedia import QMediaDevices
+
+            metadata: list[dict[str, Any]] = []
+            for device in QMediaDevices.videoInputs():
+                resolutions = sorted(
+                    {
+                        (
+                            camera_format.resolution().width(),
+                            camera_format.resolution().height(),
+                        )
+                        for camera_format in device.videoFormats()
+                        if camera_format.resolution().width() > 0
+                        and camera_format.resolution().height() > 0
+                    },
+                    key=lambda size: (size[0] * size[1], size[0], size[1]),
+                )
+                metadata.append(
+                    {
+                        "name": device.description().strip() or "摄像头",
+                        "resolutions": resolutions,
+                    }
+                )
+            return metadata
+        except Exception:
+            # 系统枚举失败仍可用 OpenCV 探测；界面不会退回数字索引。
+            return []
+
+    def _supported_resolutions(
+        self,
+        camera: cv2.VideoCapture,
+        advertised_resolutions: list[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        """验证系统公布的模式，只保留能够读出同尺寸画面的分辨率。"""
+        supported: list[tuple[int, int]] = []
+        candidates = (
+            advertised_resolutions
+            if advertised_resolutions
+            else list(CAMERA_RESOLUTION_CANDIDATES)
+        )
+        for width, height in candidates:
+            if not self._running:
+                break
+            camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+            ok, frame = camera.read()
+            if not ok or frame is None:
+                continue
+            actual_height, actual_width = frame.shape[:2]
+            if (actual_width, actual_height) == (width, height):
+                supported.append((width, height))
+
+        if supported or not self._running:
+            return supported
+
+        # 某些驱动只接受默认模式。将当前真实画面尺寸重新请求并验证后纳入列表。
+        ok, frame = camera.read()
+        if not ok or frame is None:
+            return []
+        actual_height, actual_width = frame.shape[:2]
+        camera.set(cv2.CAP_PROP_FRAME_WIDTH, actual_width)
+        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, actual_height)
+        verify_ok, verify_frame = camera.read()
+        if verify_ok and verify_frame is not None:
+            verify_height, verify_width = verify_frame.shape[:2]
+            if (verify_width, verify_height) == (actual_width, actual_height):
+                return [(actual_width, actual_height)]
+        return []
 
 
 # ---------- 始终带清晰边框的复选框 ----------
@@ -1432,8 +1598,31 @@ class ClickableLabel(QLabel):
             self._refresh_scroll_state()
 
     def _maximum_scroll_offset(self) -> int:
-        text_width = self.fontMetrics().horizontalAdvance(self.text())
+        metrics = self.fontMetrics()
+        segments = self._runtime_scroll_segments()
+        if segments is not None:
+            fixed_text, device_text = segments
+            fixed_width = metrics.horizontalAdvance(fixed_text)
+            device_view_width = max(
+                self.contentsRect().width() - fixed_width,
+                0,
+            )
+            return max(
+                metrics.horizontalAdvance(device_text) - device_view_width,
+                0,
+            )
+
+        text_width = metrics.horizontalAdvance(self.text())
         return max(text_width - self.contentsRect().width(), 0)
+
+    def _runtime_scroll_segments(self) -> tuple[str, str] | None:
+        """运行信息只将“推理设备：”之后的显卡名称作为滚动部分。"""
+        marker = "推理设备："
+        marker_start = self.text().find(marker)
+        if marker_start < 0:
+            return None
+        device_start = marker_start + len(marker)
+        return self.text()[:device_start], self.text()[device_start:]
 
     def _refresh_scroll_state(self) -> None:
         if self._maximum_scroll_offset() > 0:
@@ -1479,10 +1668,30 @@ class ClickableLabel(QLabel):
             + (self.contentsRect().height() - metrics.height()) // 2
             + metrics.ascent()
         )
+        segments = self._runtime_scroll_segments()
+        if segments is None:
+            painter.drawText(
+                self.contentsRect().left() - self._scroll_offset,
+                baseline,
+                self.text(),
+            )
+            return
+
+        fixed_text, device_text = segments
+        fixed_left = self.contentsRect().left()
+        painter.drawText(fixed_left, baseline, fixed_text)
+        device_left = fixed_left + metrics.horizontalAdvance(fixed_text)
+        device_rect = QRect(
+            device_left,
+            self.contentsRect().top(),
+            max(self.contentsRect().right() - device_left + 1, 0),
+            self.contentsRect().height(),
+        )
+        painter.setClipRect(device_rect)
         painter.drawText(
-            self.contentsRect().left() - self._scroll_offset,
+            device_left - self._scroll_offset,
             baseline,
-            self.text(),
+            device_text,
         )
 
     def resizeEvent(self, event: Any) -> None:
@@ -1515,10 +1724,10 @@ class PreviewLabel(QLabel):
         self._selection_start: QPoint | None = None
         self._selection_end: QPoint | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(480, 270)
+        # 不限制预览区域最小尺寸，始终跟随窗口布局自动伸缩。
         self.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Ignored,
         )
         self.setObjectName("previewLabel")
         # 未显示摄像头画面时使用当前主题背景；收到视频帧后再切换为黑色。
@@ -1527,11 +1736,15 @@ class PreviewLabel(QLabel):
         self.setMouseTracking(True)
 
     def set_video_image(self, image: QImage) -> None:
-        """保存原始画面，并按照当前控件大小等比例缩放。"""
+        """保存最新原始画面；显示尺寸由绘制事件按当前区域决定。"""
+        first_frame = self._source_pixmap is None
         self._source_pixmap = QPixmap.fromImage(image)
         self._set_has_video(True)
-        self.setText("")
-        self._refresh_pixmap()
+        if first_frame:
+            # QLabel 不持有视频 pixmap，避免原始帧尺寸参与布局计算。
+            self.clear()
+            self.setText("")
+        self.update()
 
     def show_placeholder(self) -> None:
         """停止检测时删除最后一帧，恢复空白提示。"""
@@ -1574,7 +1787,8 @@ class PreviewLabel(QLabel):
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
-        self._refresh_pixmap()
+        # 视频在 paintEvent 中读取当前尺寸绘制，不生成中间缩放图。
+        self.update()
         window = self.window()
         if getattr(window, "compact_mode", False) and hasattr(
             window, "position_compact_controls"
@@ -1584,7 +1798,14 @@ class PreviewLabel(QLabel):
     def paintEvent(self, event: Any) -> None:
         """在视频上绘制正在拖拽或已经保存的识别区域。"""
         super().paintEvent(event)
-        if not self._detection_region_enabled or self._source_pixmap is None:
+        if self._source_pixmap is None:
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawPixmap(self._video_display_rect(), self._source_pixmap)
+
+        if not self._detection_region_enabled:
             return
 
         selection_rect: QRect | None = None
@@ -1601,7 +1822,6 @@ class PreviewLabel(QLabel):
         if selection_rect is None or selection_rect.isEmpty():
             return
 
-        painter = QPainter(self)
         painter.fillRect(selection_rect, QColor(255, 190, 0, 38))
         pen = QPen(QColor(255, 190, 0), 2)
         pen.setStyle(Qt.PenStyle.DashLine)
@@ -1774,19 +1994,6 @@ class PreviewLabel(QLabel):
             ),
         ).normalized()
 
-    def _refresh_pixmap(self) -> None:
-        if self._source_pixmap is None:
-            return
-
-        # 只保持视频自身比例；窗口宽度和高度可以自由调整。
-        scaled = self._source_pixmap.scaled(
-            self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.setPixmap(scaled)
-
-
 # ---------- 主窗口与界面状态控制 ----------
 class CameraWindow(QMainWindow):
     """程序主窗口，负责界面状态和后台线程的启动/停止。"""
@@ -1803,6 +2010,10 @@ class CameraWindow(QMainWindow):
             SETTINGS_APPLICATION,
         )
         self._preferred_camera_index: int | None = None
+        self._preferred_resolution: tuple[int, int] | None = None
+        self._camera_profiles: dict[int, dict[str, Any]] = {}
+        self._lan_port = WEB_PORT
+        self._pending_lan_restart = False
         # 记录界面模式，恢复普通窗口时需要使用这些状态。
         self.compact_mode = False
         self.dark_mode = False
@@ -1812,6 +2023,7 @@ class CameraWindow(QMainWindow):
         self._runtime_info_text = ""
         self._show_runtime_info = False
         self._normal_geometry: Any = None
+        self._normal_minimum_size: Any = None
         self._was_maximized = False
         self.setWindowTitle("AlertZone-人员进入检测与报警 · ©H-Knight")
 
@@ -1819,21 +2031,20 @@ class CameraWindow(QMainWindow):
         # 摄像头和分辨率选择框随窗口宽度共同伸缩。
         self.camera_combo.setMinimumWidth(70)
         self.camera_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Fixed,
         )
 
-        # addItem 的第二个参数是实际分辨率，currentData() 可直接取出。
         self.quality_combo = AlignedComboBox()
-        self.quality_combo.addItem("640×360", (640, 360))
-        self.quality_combo.addItem("1280×720", (1280, 720))
-        self.quality_combo.addItem("1920×1080", (1920, 1080))
-        self.quality_combo.setCurrentIndex(2)
-        self._fit_combo_minimum_width(self.quality_combo, 85)
+        self.quality_combo.addItem("正在获取分辨率…", None)
+        self.quality_combo.setEnabled(False)
         self.quality_combo.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Fixed,
         )
+        self._sync_selector_widths()
+        self.camera_field_label = QLabel("摄像头：")
+        self.resolution_field_label = QLabel("分辨率：")
 
         self.refresh_button = QPushButton("刷新")
         self.refresh_button.clicked.connect(self.refresh_cameras)
@@ -1915,6 +2126,9 @@ class CameraWindow(QMainWindow):
         self.lan_switch.setObjectName("lanSwitch")
         self.lan_switch.setToolTip("启动或停止局域网网页服务")
         self.lan_switch.toggled.connect(self.set_lan_server_enabled)
+        self.lan_devices_label = QLabel("在线设备：—")
+        self.lan_devices_label.setObjectName("lanDevicesLabel")
+        self.lan_devices_label.setToolTip("当前在线的局域网访问设备数量")
         self.lan_label = ClickableLabel(self._lan_info_text)
         self.lan_label.setObjectName("lanLabel")
         self.lan_label.setAlignment(
@@ -1951,14 +2165,21 @@ class CameraWindow(QMainWindow):
 
         self._build_ui()
         self._apply_styles()
-        self.setMinimumSize(620, 500)
+        self.setMinimumSize(460, 400)
         # 初次显示采用最小尺寸，宽度和高度之后都可以自由调整。
         self.resize(self.minimumSize())
         lan_enabled = self.restore_client_settings()
         # 恢复配置后再启动服务，避免先按默认值启动又立即关闭。
         self.lan_switch.setChecked(lan_enabled)
+        self._lan_client_timer = QTimer(self)
+        self._lan_client_timer.setInterval(1000)
+        self._lan_client_timer.timeout.connect(self.update_online_lan_devices)
+        self._lan_client_timer.start()
         # 窗口创建完成后自动扫描一次摄像头。
         self.refresh_cameras()
+        self.camera_combo.currentIndexChanged.connect(
+            self.update_resolution_list
+        )
 
     def _build_ui(self) -> None:
         """创建顶部状态栏、中间视频区和底部控制栏。"""
@@ -1999,17 +2220,38 @@ class CameraWindow(QMainWindow):
         self.status_layout.setContentsMargins(10, 6, 10, 6)
         self.status_layout.setHorizontalSpacing(6)
         self.status_layout.setVerticalSpacing(4)
+
+        self.selector_row = QWidget()
+        selector_layout = QHBoxLayout(self.selector_row)
+        selector_layout.setContentsMargins(0, 0, 0, 0)
+        selector_layout.setSpacing(0)
+        selector_layout.addWidget(self.refresh_button)
+        selector_layout.addSpacing(8)
+        selector_layout.addWidget(self.camera_field_label)
+        selector_layout.addSpacing(3)
+        selector_layout.addWidget(self.camera_combo, 1)
+        selector_layout.addSpacing(16)
+        selector_layout.addWidget(self.resolution_field_label)
+        selector_layout.addSpacing(3)
+        selector_layout.addWidget(self.quality_combo, 1)
+
+        self.metrics_row = QWidget()
+        metrics_layout = QHBoxLayout(self.metrics_row)
+        metrics_layout.setContentsMargins(0, 0, 0, 0)
+        metrics_layout.setSpacing(12)
+        metrics_layout.addWidget(self.mirror_checkbox)
+        metrics_layout.addWidget(self.lan_switch)
+        metrics_layout.addStretch(1)
+        metrics_layout.addWidget(self.lan_devices_label)
+        metrics_layout.addWidget(self.people_label)
+        metrics_layout.addWidget(self.fps_label)
+
         self._status_widgets = (
-            self.camera_combo,
-            self.refresh_button,
-            self.quality_combo,
-            self.mirror_checkbox,
-            self.lan_switch,
-            self.people_label,
-            self.fps_label,
+            self.selector_row,
+            self.metrics_row,
         )
         self._status_two_rows: bool | None = None
-        self._arrange_status_bar(two_rows=False)
+        self._arrange_status_bar(two_rows=True)
 
         # 最底栏显示可切换的局域网/运行信息以及当前运行状态。
         self.lan_card = QFrame()
@@ -2040,56 +2282,22 @@ class CameraWindow(QMainWindow):
         self.setCentralWidget(root)
 
     def _arrange_status_bar(self, two_rows: bool) -> None:
-        """根据可用宽度把顶部状态栏排成一行或两行。"""
+        """把选择控件固定在第一行，运行状态固定在第二行。"""
+        two_rows = True
         if self._status_two_rows is two_rows:
             return
 
         for widget in self._status_widgets:
             self.status_layout.removeWidget(widget)
-        for column in range(9):
-            self.status_layout.setColumnStretch(column, 0)
-
-        if two_rows:
-            # 窄窗口：常用摄像头设置在第一行，其余状态放到第二行。
-            self.status_layout.addWidget(self.camera_combo, 0, 0)
-            self.status_layout.addWidget(self.refresh_button, 0, 1)
-            self.status_layout.addWidget(self.quality_combo, 0, 2)
-            self.status_layout.addWidget(self.mirror_checkbox, 0, 3)
-            self.status_layout.addWidget(self.lan_switch, 1, 0, 1, 2)
-            self.status_layout.addWidget(self.people_label, 1, 6)
-            self.status_layout.addWidget(self.fps_label, 1, 8)
-        else:
-            # 宽窗口：所有控件保持单行，中央空余空间自动伸缩。
-            self.status_layout.addWidget(self.camera_combo, 0, 0)
-            self.status_layout.addWidget(self.refresh_button, 0, 1)
-            self.status_layout.addWidget(self.quality_combo, 0, 2)
-            self.status_layout.addWidget(self.mirror_checkbox, 0, 3)
-            self.status_layout.addWidget(self.lan_switch, 0, 4)
-            self.status_layout.addWidget(self.people_label, 0, 6)
-            self.status_layout.addWidget(self.fps_label, 0, 8)
-
+        self.status_layout.addWidget(self.selector_row, 0, 0)
+        self.status_layout.addWidget(self.metrics_row, 1, 0)
         self.status_layout.setColumnStretch(0, 1)
-        self.status_layout.setColumnStretch(2, 1)
-        self.status_layout.setColumnStretch(5, 2)
         self._status_two_rows = two_rows
         self.status_card.updateGeometry()
 
     def _update_status_bar_layout(self) -> None:
-        """窗口宽度不足时自动启用双行顶部状态栏。"""
-        natural_width = sum(
-            max(widget.minimumWidth(), widget.sizeHint().width())
-            for widget in self._status_widgets
-        )
-        spacing_width = self.status_layout.horizontalSpacing() * 6
-        margins = self.status_layout.contentsMargins()
-        required_width = (
-            natural_width
-            + spacing_width
-            + margins.left()
-            + margins.right()
-        )
-        available_width = max(self.width() - 20, 0)
-        self._arrange_status_bar(available_width < required_width)
+        """保持顶部状态栏使用固定的两行信息层级。"""
+        self._arrange_status_bar(two_rows=True)
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
@@ -2099,8 +2307,7 @@ class CameraWindow(QMainWindow):
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
         # Windows 会在窗口显示后最终确定字体，再测量一次避免数像素误差。
-        self._fit_combo_minimum_width(self.camera_combo, 70)
-        self._fit_combo_minimum_width(self.quality_combo, 85)
+        self._sync_selector_widths()
         self._update_status_bar_layout()
 
     def _apply_styles(self) -> None:
@@ -2147,6 +2354,10 @@ class CameraWindow(QMainWindow):
         self.setStyleSheet(f"""
             QMainWindow, QWidget#rootWidget {{
                 background: {colors["window"]};
+            }}
+            QDialog {{
+                color: {colors["text"]};
+                background: {colors["card"]};
             }}
             QWidget {{
                 color: {colors["text"]};
@@ -2239,6 +2450,14 @@ class CameraWindow(QMainWindow):
                 selection-color: white;
                 selection-background-color: #2563eb;
             }}
+            QSpinBox {{
+                min-height: 28px;
+                padding: 0 6px;
+                color: {colors["text"]};
+                background: {colors["input"]};
+                border: 1px solid {colors["border"]};
+                border-radius: 5px;
+            }}
             QCheckBox {{
                 spacing: 5px;
             }}
@@ -2301,25 +2520,25 @@ class CameraWindow(QMainWindow):
             """)
 
         # QSS 字体生效后重新测量，避免 Windows 字体比初始化阶段更宽。
-        self._fit_combo_minimum_width(self.camera_combo, 70)
-        self._fit_combo_minimum_width(self.quality_combo, 85)
+        self._sync_selector_widths()
+        self._stabilize_status_widths()
         self._update_status_bar_layout()
 
-    @staticmethod
-    def _fit_combo_minimum_width(
-        combo: QComboBox,
-        baseline_width: int,
-    ) -> None:
-        """按最长选项文字设置下拉框最小宽度，并预留内部边距。"""
-        longest_text_width = max(
-            (
-                combo.fontMetrics().horizontalAdvance(combo.itemText(index))
-                for index in range(combo.count())
-            ),
-            default=0,
-        )
-        # 额外空间用于下拉列表的选中标记和左右内边距。
-        combo.setMinimumWidth(max(baseline_width, longest_text_width + 44))
+    def _sync_selector_widths(self) -> None:
+        """忽略不同内容长度，让摄像头与分辨率选择框保持等宽。"""
+        for combo in (self.camera_combo, self.quality_combo):
+            combo.setMinimumWidth(40)
+            combo.setSizePolicy(
+                QSizePolicy.Policy.Ignored,
+                QSizePolicy.Policy.Fixed,
+            )
+
+    def _stabilize_status_widths(self) -> None:
+        """为 FPS 预留稳定宽度，数值刷新时不推动前方状态文字。"""
+        fps_width = self.fps_label.fontMetrics().horizontalAdvance(
+            "FPS：999.9"
+        ) + 4
+        self.fps_label.setFixedWidth(fps_width)
 
     @staticmethod
     def _setting_as_bool(value: Any, default: bool) -> bool:
@@ -2347,16 +2566,35 @@ class CameraWindow(QMainWindow):
         except (TypeError, ValueError):
             self._preferred_camera_index = None
 
-        quality_index = self.settings.value(
-            "quality_index",
-            self.quality_combo.currentIndex(),
-        )
+        resolution_width = self.settings.value("resolution_width")
+        resolution_height = self.settings.value("resolution_height")
         try:
-            quality_index = int(quality_index)
+            if resolution_width is not None and resolution_height is not None:
+                self._preferred_resolution = (
+                    int(resolution_width),
+                    int(resolution_height),
+                )
         except (TypeError, ValueError):
-            quality_index = self.quality_combo.currentIndex()
-        if 0 <= quality_index < self.quality_combo.count():
-            self.quality_combo.setCurrentIndex(quality_index)
+            self._preferred_resolution = None
+
+        # 兼容旧版本按固定三档保存的索引。
+        if self._preferred_resolution is None:
+            old_resolutions = ((640, 360), (1280, 720), (1920, 1080))
+            try:
+                old_quality_index = int(
+                    self.settings.value("quality_index", 2)
+                )
+                if 0 <= old_quality_index < len(old_resolutions):
+                    self._preferred_resolution = old_resolutions[old_quality_index]
+            except (TypeError, ValueError):
+                pass
+
+        try:
+            saved_port = int(self.settings.value("lan_port", WEB_PORT))
+            if 1024 <= saved_port <= 65535:
+                self._lan_port = saved_port
+        except (TypeError, ValueError):
+            self._lan_port = WEB_PORT
 
         mirror_enabled = self._setting_as_bool(
             self.settings.value("mirror_enabled"),
@@ -2422,9 +2660,13 @@ class CameraWindow(QMainWindow):
         if camera_index is not None:
             self.settings.setValue("camera_index", int(camera_index))
         self.settings.setValue(
-            "quality_index",
-            self.quality_combo.currentIndex(),
+            "lan_port",
+            self._lan_port,
         )
+        resolution = self.quality_combo.currentData()
+        if resolution is not None:
+            self.settings.setValue("resolution_width", int(resolution[0]))
+            self.settings.setValue("resolution_height", int(resolution[1]))
         self.settings.setValue(
             "mirror_enabled",
             self.mirror_checkbox.isChecked(),
@@ -2502,10 +2744,52 @@ class CameraWindow(QMainWindow):
 
     def set_lan_server_enabled(self, enabled: bool) -> None:
         """响应局域网开关，不改变本地摄像头检测状态。"""
+        self._pending_lan_restart = False
         if enabled:
             self.start_lan_server()
         else:
             self.stop_lan_server()
+
+    def configure_lan_port(self) -> None:
+        """从局域网信息右键菜单配置端口，不改变启用状态。"""
+        dialog = QInputDialog(self)
+        dialog.setWindowTitle("配置局域网端口")
+        dialog.setLabelText("端口号（1024–65535）：")
+        dialog.setInputMode(QInputDialog.InputMode.IntInput)
+        dialog.setIntRange(1024, 65535)
+        dialog.setIntValue(self._lan_port)
+        dialog.setIntStep(1)
+        # 显式沿用当前主题，避免 macOS/Windows 的默认对话框颜色割裂。
+        dialog.setStyleSheet(self.styleSheet())
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        port = dialog.intValue()
+        if not accepted or port == self._lan_port:
+            return
+
+        self._lan_port = port
+        self.settings.setValue("lan_port", port)
+        self.settings.sync()
+        if not self.lan_switch.isChecked():
+            self.set_lan_info(f"局域网：已关闭（端口 {port}）")
+            return
+
+        server = self.web_server
+        if server is not None:
+            self._pending_lan_restart = True
+            self.set_lan_info(f"局域网：正在切换到端口 {port}…")
+            self.stop_lan_server(update_status=False)
+        else:
+            self.start_lan_server()
+
+    def update_online_lan_devices(self) -> None:
+        """定时在桌面客户端显示仍在线的网页设备数量。"""
+        count = (
+            self.lan_state.online_client_count()
+            if self.lan_switch.isChecked()
+            else 0
+        )
+        displayed_count = str(count) if count > 0 else "—"
+        self.lan_devices_label.setText(f"在线设备：{displayed_count}")
 
     def set_lan_info(self, text: str, tooltip: str = "") -> None:
         """保存局域网状态；当前显示局域网信息时同步刷新标签。"""
@@ -2564,29 +2848,31 @@ class CameraWindow(QMainWindow):
             QMessageBox.warning(self, "打开失败", "无法调用默认浏览器。")
 
     def show_lan_context_menu(self, position: QPoint) -> None:
-        """仅在显示局域网状态时提供复制和浏览器打开操作。"""
+        """提供网址操作和局域网端口配置。"""
         url = self.current_lan_url()
-        if (
-            not url
-            or (self._runtime_info_text and self._show_runtime_info)
-        ):
-            return
-
         menu = QMenu(self)
         menu.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        copy_action = menu.addAction("复制网址")
-        open_action = menu.addAction("默认浏览器打开")
-        copy_action.triggered.connect(self.copy_lan_info)
-        open_action.triggered.connect(self.open_lan_in_browser)
+        if url:
+            copy_action = menu.addAction("复制网址")
+            open_action = menu.addAction("默认浏览器打开")
+            copy_action.triggered.connect(self.copy_lan_info)
+            open_action.triggered.connect(self.open_lan_in_browser)
+            menu.addSeparator()
+        port_action = menu.addAction(f"配置端口（当前 {self._lan_port}）")
+        port_action.triggered.connect(self.configure_lan_port)
         menu.exec(self.lan_label.mapToGlobal(position))
 
     def start_lan_server(self) -> None:
         """启动只读局域网前端服务；它不打开摄像头也不执行模型推理。"""
-        if self.web_server is not None and self.web_server.isRunning():
+        if self.web_server is not None:
             return
 
         self.set_lan_info("局域网：正在启动…")
-        server = LanWebServer(self.lan_state, parent=self)
+        server = LanWebServer(
+            self.lan_state,
+            port=self._lan_port,
+            parent=self,
+        )
         server.server_started.connect(self.show_lan_url)
         server.server_failed.connect(self.show_lan_error)
         server.finished.connect(lambda: self.lan_server_finished(server))
@@ -2594,17 +2880,19 @@ class CameraWindow(QMainWindow):
         self.web_server = server
         server.start()
 
-    def stop_lan_server(self) -> None:
+    def stop_lan_server(self, update_status: bool = True) -> None:
         """停止网页服务；摄像头识别线程继续按原状态运行。"""
-        self.set_lan_info("局域网：已关闭")
+        if update_status:
+            self.set_lan_info("局域网：已关闭")
+        self.lan_state.clear_online_clients()
+        self.update_online_lan_devices()
         server = self.web_server
         if server is None:
             return
 
         # 停止期间暂时锁定开关，避免同一 QThread 尚未结束就重复启动。
         self.lan_switch.setEnabled(False)
-        if server.isRunning():
-            server.stop()
+        server.stop()
 
     def show_lan_url(self, url: str) -> None:
         """在本地状态栏显示其他局域网设备应该访问的地址。"""
@@ -2617,6 +2905,9 @@ class CameraWindow(QMainWindow):
 
     def show_lan_error(self, message: str) -> None:
         """网页服务失败不应中断本地摄像头检测。"""
+        self._pending_lan_restart = False
+        self.lan_state.clear_online_clients()
+        self.update_online_lan_devices()
         self.set_lan_info("局域网：启动失败", message)
         self.lan_switch.blockSignals(True)
         self.lan_switch.setChecked(False)
@@ -2628,7 +2919,13 @@ class CameraWindow(QMainWindow):
             return
 
         self.web_server = None
+        self.lan_state.clear_online_clients()
+        self.update_online_lan_devices()
         self.lan_switch.setEnabled(True)
+        if self._pending_lan_restart and self.lan_switch.isChecked():
+            self._pending_lan_restart = False
+            self.start_lan_server()
+            return
         if self.lan_switch.isChecked():
             # 服务意外退出时让开关状态与实际状态重新一致。
             self.lan_switch.blockSignals(True)
@@ -2716,6 +3013,7 @@ class CameraWindow(QMainWindow):
 
         # 直接保存窗口矩形，避免 restoreGeometry 在小屏幕上自动压缩尺寸。
         self._normal_geometry = self.geometry()
+        self._normal_minimum_size = self.minimumSize()
         self._was_maximized = self.isMaximized()
         self.compact_mode = True
         self._sync_compact_buttons()
@@ -2728,7 +3026,6 @@ class CameraWindow(QMainWindow):
         self.lan_card.hide()
         self.root_layout.setContentsMargins(0, 0, 0, 0)
         self.root_layout.setSpacing(0)
-        self.preview_label.setMinimumSize(160, 90)
         self.preview_label.setProperty("compact", True)
         self.preview_label.style().unpolish(self.preview_label)
         self.preview_label.style().polish(self.preview_label)
@@ -2760,7 +3057,6 @@ class CameraWindow(QMainWindow):
         self.lan_card.show()
         self.root_layout.setContentsMargins(10, 10, 10, 10)
         self.root_layout.setSpacing(8)
-        self.preview_label.setMinimumSize(480, 270)
         self.preview_label.setProperty("compact", False)
         self.preview_label.set_detection_region_enabled(
             self.detection_region_button.isChecked()
@@ -2770,7 +3066,9 @@ class CameraWindow(QMainWindow):
 
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, False)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
-        self.setMinimumSize(620, 500)
+        # 小窗口使用独立限制，退出后原样恢复主窗口此前的最小尺寸。
+        if self._normal_minimum_size is not None:
+            self.setMinimumSize(self._normal_minimum_size)
 
         if self._was_maximized:
             self.showMaximized()
@@ -2797,30 +3095,92 @@ class CameraWindow(QMainWindow):
         self.scan_worker = scan_worker
         scan_worker.start()
 
-    def apply_camera_list(self, camera_indexes: list[int]) -> None:
-        """把扫描结果写入下拉框，并尽量恢复之前选择的摄像头。"""
+    def apply_camera_list(
+        self,
+        camera_profiles: list[dict[str, Any]],
+    ) -> None:
+        """显示摄像头名称，并为当前设备加载已验证的分辨率。"""
         selected_index = self.camera_combo.currentData()
         if selected_index is None:
             selected_index = self._preferred_camera_index
+        self._camera_profiles = {
+            int(profile["index"]): profile for profile in camera_profiles
+        }
+        self.camera_combo.blockSignals(True)
         self.camera_combo.clear()
 
-        for index in camera_indexes:
-            self.camera_combo.addItem(f"摄像头 {index}", index)
+        for profile in camera_profiles:
+            self.camera_combo.addItem(
+                str(profile["name"]),
+                int(profile["index"]),
+            )
 
-        if not camera_indexes:
-            self.camera_combo.addItem("默认摄像头（索引 0）", 0)
-            self.status_label.setText("未探测到摄像头，可尝试索引 0 并检查权限")
+        if not camera_profiles:
+            self.camera_combo.addItem("未检测到可用摄像头", None)
+            self.status_label.setText("未探测到摄像头，请检查权限或设备占用")
         else:
-            self.status_label.setText(f"发现 {len(camera_indexes)} 个摄像头")
-
-        # Windows 中文字体通常更宽，根据最长选项动态保证完整显示。
-        self._fit_combo_minimum_width(self.camera_combo, 70)
-        self._update_status_bar_layout()
+            self.status_label.setText(f"发现 {len(camera_profiles)} 个摄像头")
 
         if selected_index is not None:
             restored = self.camera_combo.findData(selected_index)
             if restored >= 0:
                 self.camera_combo.setCurrentIndex(restored)
+        self.camera_combo.blockSignals(False)
+        self.update_resolution_list()
+
+        self._sync_selector_widths()
+        self._update_status_bar_layout()
+
+    def update_resolution_list(self, _index: int = -1) -> None:
+        """只列出当前摄像头已经实际请求并成功取帧的分辨率。"""
+        camera_index = self.camera_combo.currentData()
+        profile = (
+            self._camera_profiles.get(int(camera_index))
+            if camera_index is not None
+            else None
+        )
+        resolutions = list(profile.get("resolutions", [])) if profile else []
+
+        current_resolution = self.quality_combo.currentData()
+        self.quality_combo.blockSignals(True)
+        self.quality_combo.clear()
+        for width, height in resolutions:
+            self.quality_combo.addItem(
+                f"{width}×{height}",
+                (int(width), int(height)),
+            )
+
+        if resolutions:
+            # 首次取得列表时默认选择 1280×720；切换设备时优先保留
+            # 当前选择。不可用时再尝试历史设置和最高可用模式。
+            selected = -1
+            for preferred in (
+                current_resolution,
+                DEFAULT_CAMERA_RESOLUTION,
+                self._preferred_resolution,
+            ):
+                if preferred is None:
+                    continue
+                selected = next(
+                    (
+                        index
+                        for index in range(self.quality_combo.count())
+                        if self.quality_combo.itemData(index) == preferred
+                    ),
+                    -1,
+                )
+                if selected >= 0:
+                    break
+            self.quality_combo.setCurrentIndex(
+                selected if selected >= 0 else len(resolutions) - 1
+            )
+            self.quality_combo.setEnabled(self.worker is None)
+        else:
+            self.quality_combo.addItem("无可用分辨率", None)
+            self.quality_combo.setEnabled(False)
+        self.quality_combo.blockSignals(False)
+        self._sync_selector_widths()
+        self._update_status_bar_layout()
 
     def scan_finished(self, finished_worker: CameraScanWorker) -> None:
         """扫描结束后恢复控件，并忽略已经过期的扫描线程信号。"""
@@ -2829,9 +3189,13 @@ class CameraWindow(QMainWindow):
 
         self.scan_worker = None
         if self.worker is None:
-            self.camera_combo.setEnabled(True)
+            camera_available = self.camera_combo.currentData() is not None
+            self.camera_combo.setEnabled(camera_available)
             self.refresh_button.setEnabled(True)
-            self.start_button.setEnabled(True)
+            self.start_button.setEnabled(
+                camera_available
+                and self.quality_combo.currentData() is not None
+            )
             self._sync_compact_buttons()
 
     def start_detection(self) -> None:
@@ -2850,11 +3214,17 @@ class CameraWindow(QMainWindow):
 
         frame_size = self.quality_combo.currentData()
         if frame_size is None:
-            frame_size = (1920, 1080)
+            QMessageBox.warning(
+                self,
+                "无可用分辨率",
+                "当前摄像头没有经过验证的可用分辨率，请刷新摄像头列表。",
+            )
+            return
         frame_width, frame_height = frame_size
 
         worker = CameraWorker(
             camera_index=int(camera_index),
+            camera_name=self.camera_combo.currentText(),
             mirror=self.mirror_checkbox.isChecked(),
             frame_width=int(frame_width),
             frame_height=int(frame_height),
@@ -2938,11 +3308,13 @@ class CameraWindow(QMainWindow):
 
     def _set_idle_controls(self) -> None:
         """把按钮和选择框恢复到未检测时的可用状态。"""
-        self.camera_combo.setEnabled(True)
+        camera_available = self.camera_combo.currentData() is not None
+        resolution_available = self.quality_combo.currentData() is not None
+        self.camera_combo.setEnabled(camera_available)
         self.refresh_button.setEnabled(True)
-        self.quality_combo.setEnabled(True)
+        self.quality_combo.setEnabled(camera_available and resolution_available)
         self.mirror_checkbox.setEnabled(True)
-        self.start_button.setEnabled(True)
+        self.start_button.setEnabled(camera_available and resolution_available)
         self.stop_button.setEnabled(False)
         self._sync_compact_buttons()
 
@@ -3043,6 +3415,7 @@ class CameraWindow(QMainWindow):
             worker.wait(4000)
 
         self.lan_state.set_running(False, "本地程序已关闭")
+        self.lan_state.clear_online_clients()
         web_server = self.web_server
         if web_server is not None and web_server.isRunning():
             web_server.stop()
