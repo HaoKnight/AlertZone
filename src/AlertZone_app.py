@@ -138,13 +138,14 @@ def select_inference_device() -> tuple[str, str]:
 
 
 def open_camera(camera_index: int) -> cv2.VideoCapture:
-    """按平台打开摄像头；Windows 保持原有 MSMF 性能并以 DSHOW 后备。"""
+    """按平台打开摄像头；macOS 固定使用与设备排序一致的 AVFoundation。"""
     camera = cv2.VideoCapture()
-    backends = (
-        (cv2.CAP_MSMF, cv2.CAP_DSHOW)
-        if sys.platform == "win32"
-        else (cv2.CAP_ANY,)
-    )
+    if sys.platform == "win32":
+        backends = (cv2.CAP_MSMF, cv2.CAP_DSHOW)
+    elif sys.platform == "darwin":
+        backends = (cv2.CAP_AVFOUNDATION,)
+    else:
+        backends = (cv2.CAP_ANY,)
     for backend in backends:
         try:
             if camera.open(camera_index, backend):
@@ -1476,14 +1477,30 @@ class CameraScanWorker(QThread):
                 )
                 metadata.append(
                     {
+                        "device_id": bytes(device.id()),
                         "name": device.description().strip() or "摄像头",
                         "resolutions": resolutions,
                     }
                 )
-            return metadata
+            return CameraScanWorker._metadata_in_opencv_order(metadata)
         except Exception:
             # 系统枚举失败仍可用 OpenCV 探测；界面不会退回数字索引。
             return []
+
+    @staticmethod
+    def _metadata_in_opencv_order(
+        metadata: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """在 macOS 上按 AVFoundation 唯一 ID 对齐 OpenCV 的摄像头索引。"""
+        if sys.platform != "darwin":
+            return metadata
+
+        # OpenCV 的 AVFoundation 后端先按 AVCaptureDevice.uniqueID 排序，
+        # 再把排序后的位置作为 VideoCapture 的数字索引。Qt 返回的列表顺序
+        # 不保证相同，因此必须用 QCameraDevice.id() 做相同排序。
+        if not metadata or any(not item.get("device_id") for item in metadata):
+            return metadata
+        return sorted(metadata, key=lambda item: item["device_id"])
 
     def _supported_resolutions(
         self,
