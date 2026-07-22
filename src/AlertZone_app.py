@@ -137,6 +137,34 @@ def select_inference_device() -> tuple[str, str]:
     return "cpu", "CPU"
 
 
+def open_camera(camera_index: int) -> cv2.VideoCapture:
+    """按平台选择稳定的视频后端；Windows 优先避开易失效的 MSMF。"""
+    camera = cv2.VideoCapture()
+    backends = (
+        (cv2.CAP_DSHOW, cv2.CAP_MSMF)
+        if sys.platform == "win32"
+        else (cv2.CAP_ANY,)
+    )
+    for backend in backends:
+        try:
+            if camera.open(camera_index, backend):
+                return camera
+        except cv2.error:
+            pass
+        camera.release()
+    return camera
+
+
+def safe_camera_read(
+    camera: cv2.VideoCapture,
+) -> tuple[bool, Any]:
+    """将部分 Windows 驱动抛出的 cv2.error 转换为普通读取失败。"""
+    try:
+        return camera.read()
+    except cv2.error:
+        return False, None
+
+
 # ---------- 局域网检测状态 ----------
 class LanDetectionState:
     """保存网页需要读取的少量状态，不让网页直接接触摄像头和模型。"""
@@ -1158,7 +1186,7 @@ class CameraWorker(QThread):
 
             # 使用 OpenCV 打开指定编号的摄像头，并请求界面中选择的分辨率。
             self.status_changed.emit(f"正在打开{self.camera_name}…")
-            camera = cv2.VideoCapture(self.camera_index)
+            camera = open_camera(self.camera_index)
             camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.frame_width)
             camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.frame_height)
             # 尽量只保留最新帧，减少实时检测时的画面延迟。
@@ -1172,7 +1200,7 @@ class CameraWorker(QThread):
 
             # 扫描阶段已经验证过该模式；启动时再次以实际帧严格确认，防止
             # 驱动静默回退到其他尺寸却仍在界面上显示为已选分辨率。
-            initial_ok, initial_frame = camera.read()
+            initial_ok, initial_frame = safe_camera_read(camera)
             if not initial_ok or initial_frame is None:
                 raise RuntimeError("无法读取摄像头画面。")
             actual_height, actual_width = initial_frame.shape[:2]
@@ -1210,7 +1238,7 @@ class CameraWorker(QThread):
                     frame = pending_frame
                     pending_frame = None
                 else:
-                    ok, frame = camera.read()
+                    ok, frame = safe_camera_read(camera)
                     if not ok:
                         raise RuntimeError("无法继续读取摄像头画面。")
 
@@ -1389,32 +1417,33 @@ class CameraScanWorker(QThread):
             if not self._running:
                 break
 
-            camera = cv2.VideoCapture(index)
-            try:
-                if camera.isOpened():
-                    metadata = (
-                        camera_metadata[index]
-                        if index < len(camera_metadata)
-                        else None
-                    )
-                    advertised_resolutions = (
-                        metadata["resolutions"] if metadata else []
-                    )
-                    resolutions = self._supported_resolutions(
-                        camera,
-                        advertised_resolutions,
-                    )
-                    if resolutions:
-                        name = metadata["name"] if metadata else "摄像头"
-                        camera_profiles.append(
-                            {
-                                "index": index,
-                                "name": name,
-                                "resolutions": resolutions,
-                            }
-                        )
-            finally:
+            camera = open_camera(index)
+            if not camera.isOpened():
                 camera.release()
+                continue
+            # 分辨率逐项使用独立连接验证，因此先释放探测连接。
+            camera.release()
+            metadata = (
+                camera_metadata[index]
+                if index < len(camera_metadata)
+                else None
+            )
+            advertised_resolutions = (
+                metadata["resolutions"] if metadata else []
+            )
+            resolutions = self._supported_resolutions(
+                index,
+                advertised_resolutions,
+            )
+            if resolutions:
+                name = metadata["name"] if metadata else "摄像头"
+                camera_profiles.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "resolutions": resolutions,
+                    }
+                )
 
         if self._running:
             self.cameras_found.emit(camera_profiles)
@@ -1452,10 +1481,10 @@ class CameraScanWorker(QThread):
 
     def _supported_resolutions(
         self,
-        camera: cv2.VideoCapture,
+        camera_index: int,
         advertised_resolutions: list[tuple[int, int]],
     ) -> list[tuple[int, int]]:
-        """验证系统公布的模式，只保留能够读出同尺寸画面的分辨率。"""
+        """用独立连接验证各模式，避免失败模式破坏后续 Windows 读取。"""
         supported: list[tuple[int, int]] = []
         candidates = (
             advertised_resolutions
@@ -1465,30 +1494,56 @@ class CameraScanWorker(QThread):
         for width, height in candidates:
             if not self._running:
                 break
-            camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            ok, frame = camera.read()
-            if not ok or frame is None:
+            camera = open_camera(camera_index)
+            try:
+                if not camera.isOpened():
+                    continue
+                camera.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+                ok, frame = safe_camera_read(camera)
+                if not ok or frame is None:
+                    continue
+                actual_height, actual_width = frame.shape[:2]
+                if (actual_width, actual_height) == (width, height):
+                    supported.append((width, height))
+            except cv2.error:
                 continue
-            actual_height, actual_width = frame.shape[:2]
-            if (actual_width, actual_height) == (width, height):
-                supported.append((width, height))
+            finally:
+                camera.release()
 
         if supported or not self._running:
             return supported
 
-        # 某些驱动只接受默认模式。将当前真实画面尺寸重新请求并验证后纳入列表。
-        ok, frame = camera.read()
-        if not ok or frame is None:
+        # 某些驱动只公布或接受默认模式；取得默认尺寸后重新连接验证。
+        camera = open_camera(camera_index)
+        try:
+            if not camera.isOpened():
+                return []
+            ok, frame = safe_camera_read(camera)
+            if not ok or frame is None:
+                return []
+            actual_height, actual_width = frame.shape[:2]
+        finally:
+            camera.release()
+
+        camera = open_camera(camera_index)
+        try:
+            if not camera.isOpened():
+                return []
+            camera.set(cv2.CAP_PROP_FRAME_WIDTH, actual_width)
+            camera.set(cv2.CAP_PROP_FRAME_HEIGHT, actual_height)
+            verify_ok, verify_frame = safe_camera_read(camera)
+            if verify_ok and verify_frame is not None:
+                verify_height, verify_width = verify_frame.shape[:2]
+                if (verify_width, verify_height) == (
+                    actual_width,
+                    actual_height,
+                ):
+                    return [(actual_width, actual_height)]
+        except cv2.error:
             return []
-        actual_height, actual_width = frame.shape[:2]
-        camera.set(cv2.CAP_PROP_FRAME_WIDTH, actual_width)
-        camera.set(cv2.CAP_PROP_FRAME_HEIGHT, actual_height)
-        verify_ok, verify_frame = camera.read()
-        if verify_ok and verify_frame is not None:
-            verify_height, verify_width = verify_frame.shape[:2]
-            if (verify_width, verify_height) == (actual_width, actual_height):
-                return [(actual_width, actual_height)]
+        finally:
+            camera.release()
         return []
 
 
