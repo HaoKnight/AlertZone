@@ -1411,9 +1411,15 @@ class CameraScanWorker(QThread):
         """QThread 的线程入口；耗时任务在这里执行，不阻塞主界面。"""
         camera_profiles: list[dict[str, Any]] = []
         camera_metadata = self._camera_metadata()
+        scan_count = (
+            min(self.max_camera_count, len(camera_metadata))
+            if camera_metadata
+            else self.max_camera_count
+        )
 
-        # OpenCV 没有统一的摄像头枚举接口，因此依次探测常用索引 0～5。
-        for index in range(self.max_camera_count):
+        # Qt 能枚举设备时只探测对应数量，避免 Windows 对不存在的索引
+        # 同时输出 DSHOW 和 MSMF 警告；枚举不可用时才回退扫描 0～5。
+        for index in range(scan_count):
             if not self._running:
                 break
 
@@ -1716,7 +1722,16 @@ class ClickableLabel(QLabel):
         painter = QPainter(self)
         painter.setClipRect(self.contentsRect())
         painter.setPen(self.palette().color(self.foregroundRole()))
-        painter.setFont(self.font())
+        paint_font = self.font()
+        if paint_font.pointSizeF() <= 0 and paint_font.pixelSize() > 0:
+            point_size = (
+                paint_font.pixelSize()
+                * 72.0
+                / max(self.logicalDpiY(), 1)
+            )
+            paint_font.setPointSizeF(max(point_size, 1.0))
+        if paint_font.pointSizeF() > 0:
+            painter.setFont(paint_font)
         metrics = self.fontMetrics()
         baseline = (
             self.contentsRect().top()
