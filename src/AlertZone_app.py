@@ -70,6 +70,7 @@ TRACKER_NAME = "bytetrack.yaml"
 PERSON_CLASS_ID = 0
 ALERT_CONFIRM_SECONDS = 1.0
 ALERT_CONFIRM_OPTIONS_SECONDS = (0.0, 0.2, 0.5, 1.0, 2.0)
+OPERATION_STATUS_DURATION_MS = 1000
 
 # 程序图标和局域网网页都相对于脚本目录定位，源码与打包环境均可读取。
 APP_ROOT = Path(__file__).resolve().parent
@@ -2145,6 +2146,7 @@ class CameraWindow(QMainWindow):
         self._lan_info_tooltip = ""
         self._runtime_info_text = ""
         self._show_runtime_info = False
+        self._idle_status_text = "等待操作"
         self._normal_geometry: Any = None
         self._normal_minimum_size: Any = None
         self._was_maximized = False
@@ -2245,6 +2247,14 @@ class CameraWindow(QMainWindow):
         self.running_indicator.setFixedSize(9, 9)
         self.running_indicator.setToolTip("检测正在运行")
         self.running_indicator.hide()
+        self._status_restore_timer = QTimer(self)
+        self._status_restore_timer.setSingleShot(True)
+        self._status_restore_timer.setInterval(
+            OPERATION_STATUS_DURATION_MS
+        )
+        self._status_restore_timer.timeout.connect(
+            self.restore_default_status
+        )
         self.lan_switch = PlatformCheckBox("局域网连接")
         self.lan_switch.setObjectName("lanSwitch")
         self.lan_switch.setToolTip("启动或停止局域网网页服务")
@@ -2897,6 +2907,9 @@ class CameraWindow(QMainWindow):
             self.start_lan_server()
         else:
             self.stop_lan_server()
+        self.show_operation_status(
+            "局域网连接已开启" if enabled else "局域网连接已关闭"
+        )
 
     def configure_lan_port(self) -> None:
         """从局域网信息右键菜单配置端口，不改变启用状态。"""
@@ -2917,6 +2930,7 @@ class CameraWindow(QMainWindow):
         self._lan_port = port
         self.settings.setValue("lan_port", port)
         self.settings.sync()
+        self.show_operation_status(f"局域网端口已更新为 {port}")
         if not self.lan_switch.isChecked():
             self.set_lan_info(f"局域网：已关闭（端口 {port}）")
             return
@@ -3115,18 +3129,18 @@ class CameraWindow(QMainWindow):
                 if worker is not None and worker.isRunning()
                 else "识别框选已关闭"
             )
-        self.status_label.setText(status)
-        self.lan_state.set_status(status)
+        self.show_operation_status(status)
 
     def set_mirror_enabled(self, enabled: bool) -> None:
         """让正在运行的检测线程立即采用新的镜像状态。"""
         worker = self.worker
-        if worker is None or not worker.isRunning():
-            return
-
-        worker.set_mirror(enabled)
-        self.people_label.setText("人数：0")
-        self.lan_state.reset_presence()
+        if worker is not None and worker.isRunning():
+            worker.set_mirror(enabled)
+            self.people_label.setText("人数：0")
+            self.lan_state.reset_presence()
+        self.show_operation_status(
+            "镜像画面已开启" if enabled else "镜像画面已关闭"
+        )
 
     def update_rotation_button_tooltip(self) -> None:
         """显示当前画面方向以及按钮的下一步操作。"""
@@ -3151,8 +3165,7 @@ class CameraWindow(QMainWindow):
             if self.rotation_degrees == 0
             else f"画面已顺时针旋转至 {self.rotation_degrees}°"
         )
-        self.status_label.setText(status)
-        self.lan_state.set_status(status)
+        self.show_operation_status(status)
 
     def apply_detection_region(self, region: DetectionRegion) -> None:
         """保存用户拖拽的区域，并让检测线程从下一帧开始使用。"""
@@ -3171,14 +3184,16 @@ class CameraWindow(QMainWindow):
             self.people_label.setText("人数：0")
         self.lan_state.reset_presence()
         status = "识别框选已更新 · 只统计框内人物"
-        self.status_label.setText(status)
-        self.lan_state.set_status(status)
+        self.show_operation_status(status)
 
     def set_dark_mode(self, enabled: bool) -> None:
         """在浅色和黑色主题之间切换。"""
         self.dark_mode = enabled
         self.theme_button.setText("浅色主题" if enabled else "黑色主题")
         self._apply_styles()
+        self.show_operation_status(
+            "黑色主题已启用" if enabled else "浅色主题已启用"
+        )
 
     def enter_compact_mode(self) -> None:
         """隐藏所有控件，只保留可拖动、可双击恢复的视频小窗。"""
@@ -3256,6 +3271,8 @@ class CameraWindow(QMainWindow):
         if self.scan_worker is not None and self.scan_worker.isRunning():
             return
 
+        self._status_restore_timer.stop()
+        self.release_status_label_width()
         self.refresh_button.setEnabled(False)
         self.camera_combo.setEnabled(False)
         self.start_button.setEnabled(False)
@@ -3289,11 +3306,13 @@ class CameraWindow(QMainWindow):
                 int(profile["index"]),
             )
 
+        idle_status = f"发现 {len(camera_profiles)} 个摄像头"
         if not camera_profiles:
             self.camera_combo.addItem("未检测到可用摄像头", None)
-            self.status_label.setText("未探测到摄像头，请检查权限或设备占用")
-        else:
-            self.status_label.setText(f"发现 {len(camera_profiles)} 个摄像头")
+        self._idle_status_text = idle_status
+        self._status_restore_timer.stop()
+        self.release_status_label_width()
+        self.status_label.setText(idle_status)
 
         if selected_index is not None:
             restored = self.camera_combo.findData(selected_index)
@@ -3473,8 +3492,8 @@ class CameraWindow(QMainWindow):
         self._set_idle_controls()
         # 清空保存的 QPixmap，确保停止后不保留最后一帧。
         self.preview_label.show_placeholder()
-        self.status_label.setText("已停止")
         self.hide_runtime_info()
+        self.show_operation_status("已停止")
         self.people_label.setText("人数：—")
         self.fps_label.setText("FPS：—")
         self.lan_state.set_running(False, "本地检测已停止")
@@ -3511,6 +3530,63 @@ class CameraWindow(QMainWindow):
         self.fps_label.setText(f"FPS：{fps:.1f}")
         self.lan_state.update_stats(people_count, fps)
 
+    def is_detection_running(self) -> bool:
+        """返回检测是否已经完成初始化并进入稳定运行状态。"""
+        worker = self.worker
+        return bool(
+            self._runtime_info_text
+            and worker is not None
+            and worker.isRunning()
+        )
+
+    def release_status_label_width(self) -> None:
+        """取消状态文字的固定宽度，让它能够临时占用左侧空间。"""
+        self.status_label.setMinimumWidth(0)
+        self.status_label.setMaximumWidth(16777215)
+
+    def show_operation_status(self, text: str) -> None:
+        """显示操作结果，一秒后恢复当前运行或待机默认状态。"""
+        self._status_restore_timer.stop()
+        self.release_status_label_width()
+        self.status_label.setText(text)
+        self.lan_state.set_status(text)
+
+        worker = self.worker
+        if (
+            worker is not None
+            and worker.isRunning()
+            and not self.is_detection_running()
+        ):
+            # 模型或摄像头仍在初始化时保留进度文字，等待后续状态更新。
+            return
+
+        # 临时按完整文字宽度显示，布局会从左侧运行信息让出空间。
+        self.status_label.setFixedWidth(self.status_label.sizeHint().width())
+        self._status_restore_timer.start()
+
+    def restore_default_status(self) -> None:
+        """根据检测状态恢复“运行中”或摄像头扫描结果。"""
+        if self.is_detection_running():
+            self.restore_running_status()
+            return
+
+        worker = self.worker
+        if worker is not None and worker.isRunning():
+            return
+
+        self.release_status_label_width()
+        self.status_label.setText(self._idle_status_text)
+
+    def restore_running_status(self) -> None:
+        """恢复右侧紧凑的“运行中”状态及其固定宽度。"""
+        if not self.is_detection_running():
+            return
+
+        self.release_status_label_width()
+        self.status_label.setText("运行中")
+        self.status_label.setFixedWidth(self.status_label.sizeHint().width())
+        self.lan_state.set_status(self._runtime_info_text)
+
     def update_worker_status(
         self,
         source_worker: CameraWorker,
@@ -3524,8 +3600,7 @@ class CameraWindow(QMainWindow):
                 and self.detection_region is None
             ):
                 displayed_text = f"{text} · 请在画面上拖拽框选范围"
-            self.status_label.setText(displayed_text)
-            self.lan_state.set_status(displayed_text)
+            self.show_operation_status(displayed_text)
 
     def update_runtime_info(
         self,
@@ -3536,21 +3611,20 @@ class CameraWindow(QMainWindow):
         if self.worker is not source_worker or not source_worker.isRunning():
             return
 
-        self.status_label.setText("运行中")
-        self.status_label.setFixedWidth(self.status_label.sizeHint().width())
         self.running_indicator.show()
         self._runtime_info_text = text
         self._show_runtime_info = True
         self.refresh_primary_info()
-        self.lan_state.set_status(text)
+        self._status_restore_timer.stop()
+        self.restore_running_status()
 
     def hide_runtime_info(self) -> None:
         """未检测或正在停止时恢复显示第一行左侧的局域网信息。"""
+        self._status_restore_timer.stop()
         self._runtime_info_text = ""
         self._show_runtime_info = False
         self.refresh_primary_info()
-        self.status_label.setMinimumWidth(0)
-        self.status_label.setMaximumWidth(16777215)
+        self.release_status_label_width()
         self.running_indicator.hide()
 
     def show_worker_error(self, message: str) -> None:
@@ -3566,8 +3640,8 @@ class CameraWindow(QMainWindow):
 
         self.worker = None
         self._set_idle_controls()
-        self.status_label.setText("摄像头已停止")
         self.hide_runtime_info()
+        self.show_operation_status("摄像头已停止")
         self.preview_label.show_placeholder()
         self.people_label.setText("人数：—")
         self.fps_label.setText("FPS：—")
