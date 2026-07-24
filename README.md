@@ -122,7 +122,7 @@ python -m pip install lapx
 请在项目根目录运行：
 
 ```bash
-python src/AlertZone_app.py
+python start.py
 ```
 
 项目已包含 `src/yolo11n.pt` 模型文件，无需在每次启动时重新下载。
@@ -168,6 +168,7 @@ python src/AlertZone_app.py
 ### 项目文件
 
 - `src/AlertZone_app.py`：桌面界面、人体检测、跟踪和局域网服务
+- `start.py`：项目根目录启动入口
 - `src/web/index.html`：局域网状态与告警页面
 - `src/yolo11n.pt`：YOLO 人体检测模型
 - `src/dev_preview.py`：开发阶段的界面自动重启脚本
@@ -179,7 +180,7 @@ python src/AlertZone_app.py
 主程序入口：
 
 ```bash
-python src/AlertZone_app.py
+python start.py
 ```
 
 自动刷新预览：
@@ -236,7 +237,7 @@ model = YOLO(str(MODEL_PATH))
 每次正式打包前先运行源码：
 
 ```bash
-python src/AlertZone_app.py
+python start.py
 ```
 
 实际检查摄像头、人体框、ByteTrack 编号、范围识别、局域网页面和实时预览均可正常工作，再继续打包。
@@ -369,7 +370,7 @@ python -m pip install --upgrade pyinstaller pyinstaller-hooks-contrib
 ```bash
 python -c "import platform; print(platform.machine())"
 python -c "import cv2, torch, ultralytics, PySide6; print('Dependencies OK')"
-python src/AlertZone_app.py
+python start.py
 ```
 
 首次运行时，在“系统设置 → 隐私与安全性 → 摄像头”中允许当前终端访问摄像头。

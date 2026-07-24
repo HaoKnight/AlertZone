@@ -166,6 +166,23 @@ def safe_camera_read(
         return False, None
 
 
+def normalize_rotation_degrees(rotation_degrees: int) -> int:
+    """把画面旋转角度归一化为 0、90、180 或 270 度。"""
+    return (int(rotation_degrees) // 90 * 90) % 360
+
+
+def rotate_frame_clockwise(frame: Any, rotation_degrees: int) -> Any:
+    """按 90 度步长顺时针旋转 OpenCV 画面。"""
+    rotation_degrees = normalize_rotation_degrees(rotation_degrees)
+    if rotation_degrees == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    if rotation_degrees == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if rotation_degrees == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
+
+
 # ---------- 局域网检测状态 ----------
 class LanDetectionState:
     """保存网页需要读取的少量状态，不让网页直接接触摄像头和模型。"""
@@ -1114,6 +1131,7 @@ class CameraWorker(QThread):
         mirror: bool,
         frame_width: int,
         frame_height: int,
+        rotation_degrees: int = 0,
         detection_region_enabled: bool = False,
         detection_region: DetectionRegion | None = None,
         lan_state: LanDetectionState | None = None,
@@ -1123,6 +1141,7 @@ class CameraWorker(QThread):
         self.camera_index = camera_index
         self.camera_name = camera_name
         self.mirror = mirror
+        self.rotation_degrees = normalize_rotation_degrees(rotation_degrees)
         self.frame_width = frame_width
         self.frame_height = frame_height
         self.lan_state = lan_state
@@ -1148,6 +1167,20 @@ class CameraWorker(QThread):
         """返回当前帧应该使用的镜像状态。"""
         with self._detection_region_lock:
             return self.mirror
+
+    def set_rotation_degrees(self, rotation_degrees: int) -> None:
+        """检测运行期间线程安全切换画面方向。"""
+        normalized_degrees = normalize_rotation_degrees(rotation_degrees)
+        with self._detection_region_lock:
+            if self.rotation_degrees == normalized_degrees:
+                return
+            self.rotation_degrees = normalized_degrees
+            self._detection_region_generation += 1
+
+    def frame_transform_state(self) -> tuple[bool, int]:
+        """返回当前帧应该使用的一致镜像和旋转状态。"""
+        with self._detection_region_lock:
+            return self.mirror, self.rotation_degrees
 
     def set_detection_region(
         self,
@@ -1243,8 +1276,10 @@ class CameraWorker(QThread):
                     if not ok:
                         raise RuntimeError("无法继续读取摄像头画面。")
 
-                if self.mirror_enabled():
+                mirror_enabled, rotation_degrees = self.frame_transform_state()
+                if mirror_enabled:
                     frame = cv2.flip(frame, 1)
+                frame = rotate_frame_clockwise(frame, rotation_degrees)
 
                 # persist=True 让 ByteTrack 保留前后帧状态，使矩形框跟随同一人物。
                 # classes=[0] 表示只保留人体，忽略车辆、动物等其他 COCO 类别。
@@ -2104,6 +2139,7 @@ class CameraWindow(QMainWindow):
         # 记录界面模式，恢复普通窗口时需要使用这些状态。
         self.compact_mode = False
         self.dark_mode = False
+        self.rotation_degrees = 0
         self.detection_region: DetectionRegion | None = None
         self._lan_info_text = "局域网：已关闭"
         self._lan_info_tooltip = ""
@@ -2213,6 +2249,12 @@ class CameraWindow(QMainWindow):
         self.lan_switch.setObjectName("lanSwitch")
         self.lan_switch.setToolTip("启动或停止局域网网页服务")
         self.lan_switch.toggled.connect(self.set_lan_server_enabled)
+        self.rotation_button = QPushButton("画面旋转↻")
+        self.rotation_button.setObjectName("rotationButton")
+        self.rotation_button.setFixedWidth(90)
+        self.rotation_button.setAccessibleName("顺时针旋转画面 90 度")
+        self.rotation_button.clicked.connect(self.rotate_video_clockwise)
+        self.update_rotation_button_tooltip()
         self.lan_devices_label = QLabel("在线设备：—")
         self.lan_devices_label.setObjectName("lanDevicesLabel")
         self.lan_devices_label.setToolTip("当前在线的局域网访问设备数量")
@@ -2321,6 +2363,8 @@ class CameraWindow(QMainWindow):
         selector_layout.addWidget(self.resolution_field_label)
         selector_layout.addSpacing(3)
         selector_layout.addWidget(self.quality_combo, 1)
+        selector_layout.addSpacing(8)
+        selector_layout.addWidget(self.rotation_button)
 
         self.metrics_row = QWidget()
         metrics_layout = QHBoxLayout(self.metrics_row)
@@ -2689,6 +2733,19 @@ class CameraWindow(QMainWindow):
         )
         self.mirror_checkbox.setChecked(mirror_enabled)
 
+        try:
+            saved_rotation = int(
+                self.settings.value("rotation_degrees", 0)
+            )
+            self.rotation_degrees = (
+                saved_rotation
+                if saved_rotation in (0, 90, 180, 270)
+                else 0
+            )
+        except (TypeError, ValueError):
+            self.rotation_degrees = 0
+        self.update_rotation_button_tooltip()
+
         region: DetectionRegion | None = None
         raw_region = self.settings.value("detection_region", "")
         if raw_region:
@@ -2757,6 +2814,10 @@ class CameraWindow(QMainWindow):
         self.settings.setValue(
             "mirror_enabled",
             self.mirror_checkbox.isChecked(),
+        )
+        self.settings.setValue(
+            "rotation_degrees",
+            self.rotation_degrees,
         )
         self.settings.setValue("dark_mode", self.dark_mode)
         self.settings.setValue(
@@ -3067,6 +3128,32 @@ class CameraWindow(QMainWindow):
         self.people_label.setText("人数：0")
         self.lan_state.reset_presence()
 
+    def update_rotation_button_tooltip(self) -> None:
+        """显示当前画面方向以及按钮的下一步操作。"""
+        self.rotation_button.setToolTip(
+            "顺时针旋转画面 90°"
+            f"（当前相对原始画面旋转 {self.rotation_degrees}°）"
+        )
+
+    def rotate_video_clockwise(self) -> None:
+        """每次点击都把桌面和局域网画面顺时针旋转 90 度。"""
+        self.rotation_degrees = (self.rotation_degrees + 90) % 360
+        self.update_rotation_button_tooltip()
+
+        worker = self.worker
+        if worker is not None and worker.isRunning():
+            worker.set_rotation_degrees(self.rotation_degrees)
+            self.people_label.setText("人数：0")
+        self.lan_state.reset_presence()
+
+        status = (
+            "画面已恢复原始方向"
+            if self.rotation_degrees == 0
+            else f"画面已顺时针旋转至 {self.rotation_degrees}°"
+        )
+        self.status_label.setText(status)
+        self.lan_state.set_status(status)
+
     def apply_detection_region(self, region: DetectionRegion) -> None:
         """保存用户拖拽的区域，并让检测线程从下一帧开始使用。"""
         normalized_region = normalize_detection_region(region)
@@ -3315,6 +3402,7 @@ class CameraWindow(QMainWindow):
             mirror=self.mirror_checkbox.isChecked(),
             frame_width=int(frame_width),
             frame_height=int(frame_height),
+            rotation_degrees=self.rotation_degrees,
             detection_region_enabled=(
                 self.detection_region_button.isChecked()
             ),
