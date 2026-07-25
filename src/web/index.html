@@ -673,8 +673,8 @@
       <img id="livePreviewImage" class="live-preview hidden" alt="实时检测画面">
       <div id="monitorContent" class="monitor-content">
         <div id="monitorIcon" class="monitor-icon">⌁</div>
-        <h2 id="monitorTitle">等待客户端服务器检测启动</h2>
-        <p id="monitorDetail">请在客户端服务器上启动“开始检测”。
+        <h2 id="monitorTitle">等待客户端检测启动</h2>
+        <p id="monitorDetail">请在客户端上启动“开始检测”。
 网页不会开启占用本机摄像头。</p>
       </div>
     </section>
@@ -686,7 +686,7 @@
     </section>
 
     <p class="privacy-note">
-      作者：H-Knight  - 网页不会打开本地摄像头，实时预览由客户端服务器检测线程按需提供。
+      作者：H-Knight  - 网页不会打开本地摄像头，实时预览由客户端检测线程按需提供。
     </p>
   </main>
 
@@ -1208,9 +1208,9 @@
       monitor.classList.remove("detecting", "person");
       if (!data.detection_running) {
         monitorIcon.textContent = "⌁";
-        monitorTitle.textContent = "等待服务器检测启动";
+        monitorTitle.textContent = "等待客户端检测启动";
         monitorDetail.textContent =
-          "请在服务器上点击“开始检测”。\n网页不会开启占用本机摄像头。";
+          "请在客户端上点击“开始检测”。\n网页不会开启占用本机摄像头。";
         return;
       }
 
