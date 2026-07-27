@@ -15,7 +15,6 @@
       --blue: #2563eb;
       --green: #16a365;
       --red: #dc3545;
-      --yellow: #ffd42a;
       --monitor: #0b0d10;
       --input: #ffffff;
       --switch: #e4e9f0;
@@ -234,6 +233,15 @@
       max-width: none;
     }
 
+    .time-config-field input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      margin: 0;
+      justify-self: end;
+      accent-color: var(--green);
+      cursor: pointer;
+    }
+
     .monitor {
       position: relative;
       display: grid;
@@ -410,28 +418,24 @@
 
     .mode-zoom .alert-title,
     .mode-zoom-red .alert-title,
+    .mode-live .alert-title,
     .mode-live-red .alert-title {
       font-size: clamp(28px, 5vw, 54px);
     }
 
-    .mode-red,
     .mode-zoom-red,
     .mode-live-red {
       color: white;
       background: #e00018;
     }
 
+    .mode-live .alert-live-preview,
     .mode-live-red .alert-live-preview {
       display: block;
     }
 
     .mode-zoom-red .intruder-image {
       border-color: white;
-    }
-
-    .mode-yellow {
-      color: #201a00;
-      background: var(--yellow);
     }
 
     .alert-actions {
@@ -624,11 +628,10 @@
             <span>实时预览</span>
           </label>
           <select id="alertMethod" aria-label="提示方法">
-            <option value="red" selected>全屏幕变为红色</option>
-            <option value="yellow">全屏幕变为黄色</option>
-            <option value="zoom">放大进入镜头的人物</option>
-            <option value="zoom-red">全屏显示红色并放大进入人物</option>
-            <option value="live-red">全屏显示红色并进行实时预览</option>
+            <option value="zoom" selected>放大人物</option>
+            <option value="live">实时预览</option>
+            <option value="zoom-red">全屏红色且放大人物</option>
+            <option value="live-red">全屏红色且实时预览</option>
           </select>
         </div>
         <div id="timeConfig" class="time-config">
@@ -661,6 +664,12 @@
                 <option value="60">60s</option>
                 <option value="0">∞</option>
               </select>
+            </label>
+            <label class="time-config-field">
+              <span>连续告警显示</span>
+              <input id="continuousAlertDisplayEnabled" type="checkbox"
+                aria-label="连续告警显示"
+                title="人员离开后再按自动退出时长关闭告警">
             </label>
           </div>
         </div>
@@ -726,6 +735,9 @@
       "#alertConfirmSeconds"
     );
     const alertTimeoutSeconds = document.querySelector("#alertTimeoutSeconds");
+    const continuousAlertDisplayEnabled = document.querySelector(
+      "#continuousAlertDisplayEnabled"
+    );
     const timeConfig = document.querySelector("#timeConfig");
     const timeConfigToggle = document.querySelector("#timeConfigToggle");
     const timeConfigMenu = document.querySelector("#timeConfigMenu");
@@ -754,6 +766,7 @@
     let alertIsOpen = false;
     let alertTimeout = null;
     let countdownInterval = null;
+    let alertExitCountdownStarted = false;
     let polling = false;
     let previewReconnectTimer = null;
     let previewReadyTimer = null;
@@ -778,19 +791,31 @@
       localStorage.getItem("cameraAlertEnabled") === "true";
     continuousDetectionEnabled.checked =
       localStorage.getItem("cameraContinuousDetectionEnabled") === "true";
+    continuousAlertDisplayEnabled.checked =
+      localStorage.getItem("cameraContinuousAlertDisplayEnabled") === "true";
     livePreviewEnabled.checked =
       localStorage.getItem("cameraLivePreviewEnabled") === "true";
     const savedAlertMethod = localStorage.getItem("cameraAlertMethod");
     const availableAlertMethods = [
       "zoom",
-      "red",
-      "yellow",
+      "live",
       "zoom-red",
       "live-red",
     ];
-    alertMethod.value = availableAlertMethods.includes(savedAlertMethod)
-      ? savedAlertMethod
-      : "red";
+    const migratedAlertMethod =
+      savedAlertMethod === "red"
+        ? "zoom-red"
+        : savedAlertMethod === "yellow"
+          ? "zoom"
+          : savedAlertMethod;
+    alertMethod.value = availableAlertMethods.includes(migratedAlertMethod)
+      ? migratedAlertMethod
+      : "zoom";
+    localStorage.setItem("cameraAlertMethod", alertMethod.value);
+
+    function usesAlertLivePreview(method = alertMethod.value) {
+      return method === "live" || method === "live-red";
+    }
     const savedAlertConfirmValue = localStorage.getItem(
       "cameraAlertConfirmSeconds"
     );
@@ -876,6 +901,19 @@
         "cameraAlertTimeoutSeconds",
         alertTimeoutSeconds.value
       );
+      if (alertIsOpen) {
+        syncAlertExitCountdown(true);
+      }
+    });
+
+    continuousAlertDisplayEnabled.addEventListener("change", () => {
+      localStorage.setItem(
+        "cameraContinuousAlertDisplayEnabled",
+        String(continuousAlertDisplayEnabled.checked)
+      );
+      if (alertIsOpen) {
+        syncAlertExitCountdown(true);
+      }
     });
 
     timeConfigToggle.addEventListener("click", () => {
@@ -1011,7 +1049,7 @@
       const renew = () => {
         if (
           !alertIsOpen ||
-          alertMethod.value !== "live-red" ||
+          !usesAlertLivePreview() ||
           generation !== alertPreviewGeneration ||
           viewerId !== alertPreviewViewerId
         ) {
@@ -1147,7 +1185,7 @@
     function openAlertLivePreviewStream(generation, viewerId) {
       if (
         !alertIsOpen ||
-        alertMethod.value !== "live-red" ||
+        !usesAlertLivePreview() ||
         generation !== alertPreviewGeneration ||
         viewerId !== alertPreviewViewerId
       ) {
@@ -1317,7 +1355,7 @@
       alertDetail.textContent =
         `检测到 ${data.intrusion_people_count || data.people_count} 人进入监控区域`;
 
-      setAlertLivePreview(method === "live-red");
+      setAlertLivePreview(usesAlertLivePreview(method));
       intruderImage.removeAttribute("src");
       if (
         (method === "zoom" || method === "zoom-red") &&
@@ -1327,12 +1365,35 @@
           `/api/intruder.jpg?event=${encodeURIComponent(data.intrusion_event_id)}`;
       }
 
+      syncAlertExitCountdown(true);
+      exitAlert.focus();
+    }
+
+    function selectedAlertTimeoutSeconds() {
       const selectedTimeoutSeconds = Number(alertTimeoutSeconds.value);
-      const timeoutSeconds = ALERT_TIMEOUT_OPTIONS_SECONDS.includes(
+      return ALERT_TIMEOUT_OPTIONS_SECONDS.includes(
         selectedTimeoutSeconds
       )
         ? selectedTimeoutSeconds
         : DEFAULT_ALERT_TIMEOUT_SECONDS;
+    }
+
+    function clearAlertExitCountdown() {
+      if (alertTimeout !== null) {
+        window.clearTimeout(alertTimeout);
+        alertTimeout = null;
+      }
+      if (countdownInterval !== null) {
+        window.clearInterval(countdownInterval);
+        countdownInterval = null;
+      }
+      alertExitCountdownStarted = false;
+    }
+
+    function startAlertExitCountdown() {
+      clearAlertExitCountdown();
+      alertExitCountdownStarted = true;
+      const timeoutSeconds = selectedAlertTimeoutSeconds();
       if (timeoutSeconds === 0) {
         countdown.textContent = "点击以手动退出";
       } else {
@@ -1345,7 +1406,24 @@
         );
         alertTimeout = window.setTimeout(closeAlert, alertTimeoutMs);
       }
-      exitAlert.focus();
+    }
+
+    function syncAlertExitCountdown(restart = false) {
+      if (!alertIsOpen) {
+        clearAlertExitCountdown();
+        return;
+      }
+      if (
+        continuousAlertDisplayEnabled.checked &&
+        latestPersonPresent
+      ) {
+        clearAlertExitCountdown();
+        countdown.textContent = "检测到人物，告警持续显示";
+        return;
+      }
+      if (!alertExitCountdownStarted || restart) {
+        startAlertExitCountdown();
+      }
     }
 
     function updateCountdown(deadline) {
@@ -1423,14 +1501,7 @@
       setAlertLivePreview(false);
       alertOverlay.className = "alert-overlay hidden";
       intruderImage.removeAttribute("src");
-      if (alertTimeout !== null) {
-        window.clearTimeout(alertTimeout);
-        alertTimeout = null;
-      }
-      if (countdownInterval !== null) {
-        window.clearInterval(countdownInterval);
-        countdownInterval = null;
-      }
+      clearAlertExitCountdown();
       if (wasOpen && rearmDetection && alertEnabled.checked) {
         if (continuousDetectionEnabled.checked) {
           startContinuousRearm();
@@ -1454,6 +1525,9 @@
         const data = await response.json();
         updateInstance(data);
         renderStatus(data);
+        if (alertIsOpen) {
+          syncAlertExitCountdown();
+        }
         maybeOpenAlert(data);
       } catch (_error) {
         setConnection("error", "连接中断");
@@ -1482,7 +1556,7 @@
       if (livePreviewEnabled.checked) {
         setLivePreview(true);
       }
-      if (alertIsOpen && alertMethod.value === "live-red") {
+      if (alertIsOpen && usesAlertLivePreview()) {
         setAlertLivePreview(true);
       }
     });

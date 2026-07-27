@@ -23,6 +23,7 @@ from PySide6.QtCore import (
     QPoint,
     QRect,
     QSettings,
+    QSize,
     Qt,
     QThread,
     QTimer,
@@ -2122,40 +2123,40 @@ class PreviewLabel(QLabel):
 
 # ---------- 关闭操作弹窗 ----------
 class CloseActionDialog(QDialog):
-    """使用紧凑的自定义排版呈现关闭窗口后的三个操作。"""
+    """在普通屏和高分屏上使用一致尺寸呈现关闭操作。"""
 
     def __init__(self, parent: QWidget, dark_mode: bool) -> None:
         super().__init__(parent)
         self.selected_action = "cancel"
         self.setObjectName("closeActionDialog")
         self.setWindowTitle(f"关闭 {APP_NAME}")
+        if ICON_PATH.is_file():
+            self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.setModal(True)
         self.setWindowFlag(
             Qt.WindowType.WindowContextHelpButtonHint,
             False,
         )
-        self.setMinimumWidth(410)
+        self.setMinimumWidth(380)
 
         root_layout = QVBoxLayout(self)
-        root_layout.setContentsMargins(14, 12, 14, 12)
-        root_layout.setSpacing(9)
+        root_layout.setContentsMargins(10, 8, 10, 8)
+        root_layout.setSpacing(7)
 
         header_layout = QHBoxLayout()
         header_layout.setSpacing(8)
 
         icon_label = QLabel()
-        icon_label.setFixedSize(34, 34)
+        icon_label.setObjectName("closeDialogIcon")
+        icon_label.setFixedSize(60, 60)
         icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         if ICON_PATH.is_file():
-            icon_pixmap = QPixmap(str(ICON_PATH))
-            icon_label.setPixmap(
-                icon_pixmap.scaled(
-                    30,
-                    30,
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+            icon = QIcon(str(ICON_PATH))
+            icon_pixmap = icon.pixmap(
+                QSize(56, 56),
+                max(self.devicePixelRatioF(), 1.0),
             )
+            icon_label.setPixmap(icon_pixmap)
         else:
             icon_label.hide()
         header_layout.addWidget(
@@ -2171,13 +2172,14 @@ class CloseActionDialog(QDialog):
         subtitle_label = QLabel("请选择关闭窗口后的操作")
         subtitle_label.setObjectName("closeDialogSubtitle")
         hint_label = QLabel(
-            "后台静默运行会隐藏或最小化窗口，监测任务和局域网服务保持运行。"
+            "后台运行时，监测和局域网服务将继续运行。"
         )
         hint_label.setObjectName("closeDialogHint")
         hint_label.setWordWrap(True)
         text_layout.addWidget(title_label)
         text_layout.addWidget(subtitle_label)
         text_layout.addWidget(hint_label)
+        text_layout.addStretch()
         header_layout.addLayout(text_layout, 1)
         root_layout.addLayout(header_layout)
 
