@@ -1,4 +1,4 @@
-"""PySide6 摄像头人体检测与跟踪界面。
+"""AlertZone Client 摄像头人体检测与跟踪界面。
 
 程序使用 YOLO + ByteTrack 框选并跟踪人体。
 程序不进行人脸检测、身份识别或人员身份比对。
@@ -30,6 +30,7 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import (
+    QAction,
     QColor,
     QCloseEvent,
     QCursor,
@@ -58,6 +59,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QStyle,
     QStyleOptionButton,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -71,6 +73,7 @@ PERSON_CLASS_ID = 0
 ALERT_CONFIRM_SECONDS = 1.0
 ALERT_CONFIRM_OPTIONS_SECONDS = (0.0, 0.2, 0.5, 1.0, 2.0)
 OPERATION_STATUS_DURATION_MS = 1000
+APP_NAME = "AlertZone Client"
 
 # 程序图标和局域网网页都相对于脚本目录定位，源码与打包环境均可读取。
 APP_ROOT = Path(__file__).resolve().parent
@@ -2117,6 +2120,191 @@ class PreviewLabel(QLabel):
             ),
         ).normalized()
 
+# ---------- 关闭操作弹窗 ----------
+class CloseActionDialog(QDialog):
+    """使用紧凑的自定义排版呈现关闭窗口后的三个操作。"""
+
+    def __init__(self, parent: QWidget, dark_mode: bool) -> None:
+        super().__init__(parent)
+        self.selected_action = "cancel"
+        self.setObjectName("closeActionDialog")
+        self.setWindowTitle(f"关闭 {APP_NAME}")
+        self.setModal(True)
+        self.setWindowFlag(
+            Qt.WindowType.WindowContextHelpButtonHint,
+            False,
+        )
+        self.setMinimumWidth(410)
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(14, 12, 14, 12)
+        root_layout.setSpacing(9)
+
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(8)
+
+        icon_label = QLabel()
+        icon_label.setFixedSize(34, 34)
+        icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        if ICON_PATH.is_file():
+            icon_pixmap = QPixmap(str(ICON_PATH))
+            icon_label.setPixmap(
+                icon_pixmap.scaled(
+                    30,
+                    30,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        else:
+            icon_label.hide()
+        header_layout.addWidget(
+            icon_label,
+            0,
+            Qt.AlignmentFlag.AlignTop,
+        )
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(2)
+        title_label = QLabel(f"关闭 {APP_NAME}")
+        title_label.setObjectName("closeDialogTitle")
+        subtitle_label = QLabel("请选择关闭窗口后的操作")
+        subtitle_label.setObjectName("closeDialogSubtitle")
+        hint_label = QLabel(
+            "后台静默运行会隐藏或最小化窗口，监测任务和局域网服务保持运行。"
+        )
+        hint_label.setObjectName("closeDialogHint")
+        hint_label.setWordWrap(True)
+        text_layout.addWidget(title_label)
+        text_layout.addWidget(subtitle_label)
+        text_layout.addWidget(hint_label)
+        header_layout.addLayout(text_layout, 1)
+        root_layout.addLayout(header_layout)
+
+        separator = QFrame()
+        separator.setObjectName("closeDialogSeparator")
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Plain)
+        root_layout.addWidget(separator)
+
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(6)
+        background_button = QPushButton("后台静默运行")
+        background_button.setObjectName("closeBackgroundButton")
+        exit_button = QPushButton("退出应用程序")
+        exit_button.setObjectName("closeExitButton")
+        cancel_button = QPushButton("取消")
+        cancel_button.setObjectName("closeCancelButton")
+
+        for button in (
+            background_button,
+            exit_button,
+            cancel_button,
+        ):
+            button.setMinimumHeight(31)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
+            button_layout.addWidget(button, 1)
+
+        background_button.setDefault(True)
+        background_button.clicked.connect(
+            lambda: self._choose("background")
+        )
+        exit_button.clicked.connect(lambda: self._choose("exit"))
+        cancel_button.clicked.connect(self.reject)
+        root_layout.addLayout(button_layout)
+
+        if dark_mode:
+            colors = {
+                "background": "#171a21",
+                "text": "#e8eaf0",
+                "muted": "#aab2bf",
+                "border": "#303640",
+                "secondary": "#272c35",
+                "secondary_hover": "#343a45",
+            }
+        else:
+            colors = {
+                "background": "#ffffff",
+                "text": "#20252d",
+                "muted": "#667080",
+                "border": "#d5dae1",
+                "secondary": "#f4f6f8",
+                "secondary_hover": "#e9edf2",
+            }
+
+        self.setStyleSheet(
+            f"""
+            QDialog#closeActionDialog {{
+                color: {colors["text"]};
+                background: {colors["background"]};
+            }}
+            QLabel#closeDialogTitle {{
+                color: {colors["text"]};
+                font-size: 15px;
+                font-weight: 700;
+            }}
+            QLabel#closeDialogSubtitle {{
+                color: {colors["text"]};
+                font-size: 12px;
+                font-weight: 600;
+            }}
+            QLabel#closeDialogHint {{
+                color: {colors["muted"]};
+                font-size: 10px;
+            }}
+            QFrame#closeDialogSeparator {{
+                color: {colors["border"]};
+                background: {colors["border"]};
+                border: none;
+                max-height: 1px;
+            }}
+            QPushButton {{
+                min-height: 31px;
+                padding: 0 4px;
+                border: 1px solid {colors["border"]};
+                border-radius: 5px;
+                font-size: 12px;
+                font-weight: 700;
+            }}
+            QPushButton#closeBackgroundButton {{
+                color: #ffffff;
+                background: #2563eb;
+                border-color: #2563eb;
+            }}
+            QPushButton#closeBackgroundButton:hover {{
+                background: #1d4ed8;
+                border-color: #1d4ed8;
+            }}
+            QPushButton#closeExitButton {{
+                color: #ffffff;
+                background: #dc3545;
+                border-color: #dc3545;
+            }}
+            QPushButton#closeExitButton:hover {{
+                background: #bd2534;
+                border-color: #bd2534;
+            }}
+            QPushButton#closeCancelButton {{
+                color: {colors["text"]};
+                background: {colors["secondary"]};
+            }}
+            QPushButton#closeCancelButton:hover {{
+                background: {colors["secondary_hover"]};
+            }}
+            QPushButton:focus {{
+                border: 2px solid #60a5fa;
+            }}
+            """
+        )
+
+    def _choose(self, action: str) -> None:
+        self.selected_action = action
+        self.accept()
+
+
 # ---------- 主窗口与界面状态控制 ----------
 class CameraWindow(QMainWindow):
     """程序主窗口，负责界面状态和后台线程的启动/停止。"""
@@ -2150,7 +2338,11 @@ class CameraWindow(QMainWindow):
         self._normal_geometry: Any = None
         self._normal_minimum_size: Any = None
         self._was_maximized = False
-        self.setWindowTitle("AlertZone-人员进入检测与报警 · ©H-Knight")
+        self._startup_auto_detection_pending = False
+        self._force_quit = False
+        self._tray_icon: QSystemTrayIcon | None = None
+        self._tray_menu: QMenu | None = None
+        self.setWindowTitle(f"{APP_NAME} · 人员进入检测与报警 · ©H-Knight")
 
         self.camera_combo = AlignedComboBox()
         # 摄像头和分辨率选择框随窗口宽度共同伸缩。
@@ -2259,6 +2451,13 @@ class CameraWindow(QMainWindow):
         self.lan_switch.setObjectName("lanSwitch")
         self.lan_switch.setToolTip("启动或停止局域网网页服务")
         self.lan_switch.toggled.connect(self.set_lan_server_enabled)
+        self.auto_detection_checkbox = PlatformCheckBox(
+            "启动时执行监测"
+        )
+        self.auto_detection_checkbox.setObjectName("autoDetectionCheckbox")
+        self.auto_detection_checkbox.setToolTip(
+            "软件启动并完成摄像头扫描后自动开始人体监测"
+        )
         self.rotation_button = QPushButton("画面旋转↻")
         self.rotation_button.setObjectName("rotationButton")
         self.rotation_button.setFixedWidth(90)
@@ -2304,10 +2503,14 @@ class CameraWindow(QMainWindow):
 
         self._build_ui()
         self._apply_styles()
+        self._setup_system_tray()
         self.setMinimumSize(460, 400)
         # 初次显示采用最小尺寸，宽度和高度之后都可以自由调整。
         self.resize(self.minimumSize())
         lan_enabled = self.restore_client_settings()
+        self._startup_auto_detection_pending = (
+            self.auto_detection_checkbox.isChecked()
+        )
         # 恢复配置后再启动服务，避免先按默认值启动又立即关闭。
         self.lan_switch.setChecked(lan_enabled)
         self._lan_client_timer = QTimer(self)
@@ -2382,6 +2585,7 @@ class CameraWindow(QMainWindow):
         metrics_layout.setSpacing(12)
         metrics_layout.addWidget(self.mirror_checkbox)
         metrics_layout.addWidget(self.lan_switch)
+        metrics_layout.addWidget(self.auto_detection_checkbox)
         metrics_layout.addStretch(1)
         metrics_layout.addWidget(self.lan_devices_label)
         metrics_layout.addWidget(self.people_label)
@@ -2781,6 +2985,11 @@ class CameraWindow(QMainWindow):
             False,
         )
         self.detection_region_button.setChecked(region_enabled)
+        auto_detection_enabled = self._setting_as_bool(
+            self.settings.value("auto_detection_on_startup"),
+            False,
+        )
+        self.auto_detection_checkbox.setChecked(auto_detection_enabled)
 
         raw_window_size = self.settings.value("window_size", "")
         if raw_window_size:
@@ -2835,6 +3044,10 @@ class CameraWindow(QMainWindow):
             self.lan_switch.isChecked(),
         )
         self.settings.setValue(
+            "auto_detection_on_startup",
+            self.auto_detection_checkbox.isChecked(),
+        )
+        self.settings.setValue(
             "detection_region_enabled",
             self.detection_region_button.isChecked(),
         )
@@ -2864,6 +3077,72 @@ class CameraWindow(QMainWindow):
         """让小窗口按钮与普通操作栏中的按钮状态保持一致。"""
         self.compact_start_button.setEnabled(self.start_button.isEnabled())
         self.compact_stop_button.setEnabled(self.stop_button.isEnabled())
+
+    def _setup_system_tray(self) -> None:
+        """创建后台运行时用于恢复窗口或退出程序的系统托盘入口。"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        tray_icon = QSystemTrayIcon(self)
+        if ICON_PATH.is_file():
+            tray_icon.setIcon(QIcon(str(ICON_PATH)))
+        tray_icon.setToolTip(APP_NAME)
+
+        tray_menu = QMenu(self)
+        show_action = QAction("显示主窗口", tray_menu)
+        show_action.triggered.connect(self._restore_from_background)
+        exit_action = QAction("退出应用程序", tray_menu)
+        exit_action.triggered.connect(self._request_application_exit)
+        tray_menu.addAction(show_action)
+        tray_menu.addSeparator()
+        tray_menu.addAction(exit_action)
+        tray_icon.setContextMenu(tray_menu)
+        tray_icon.activated.connect(self._handle_tray_activation)
+
+        self._tray_icon = tray_icon
+        self._tray_menu = tray_menu
+
+    def _handle_tray_activation(
+        self,
+        reason: QSystemTrayIcon.ActivationReason,
+    ) -> None:
+        """单击或双击托盘图标时恢复主窗口。"""
+        if reason in {
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        }:
+            self._restore_from_background()
+
+    def _restore_from_background(self) -> None:
+        """从托盘或任务栏恢复并激活主窗口。"""
+        if self._tray_icon is not None:
+            self._tray_icon.hide()
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _minimize_to_background(self) -> None:
+        """隐藏到系统托盘；无托盘环境则退化为普通最小化。"""
+        if self._tray_icon is not None:
+            self._tray_icon.show()
+            self.hide()
+            if QSystemTrayIcon.supportsMessages():
+                self._tray_icon.showMessage(
+                    APP_NAME,
+                    "程序正在后台运行，可通过托盘图标恢复窗口。",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    2500,
+                )
+        else:
+            self.showMinimized()
+
+    def _request_application_exit(self) -> None:
+        """由关闭提示或托盘菜单发起真正退出。"""
+        self._force_quit = True
+        self.close()
 
     def position_compact_controls(self) -> None:
         """把悬浮操作条放到视频区域正中央。"""
@@ -3391,6 +3670,15 @@ class CameraWindow(QMainWindow):
             )
             self._sync_compact_buttons()
 
+            should_auto_start = (
+                self._startup_auto_detection_pending
+                and self.auto_detection_checkbox.isChecked()
+                and self.start_button.isEnabled()
+            )
+            self._startup_auto_detection_pending = False
+            if should_auto_start:
+                QTimer.singleShot(0, self.start_detection)
+
     def start_detection(self) -> None:
         """响应“开始检测”按钮，创建并启动检测线程。"""
         self._start_stream()
@@ -3648,7 +3936,19 @@ class CameraWindow(QMainWindow):
         self.lan_state.set_running(False, "本地检测已停止")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """关闭窗口前等待后台线程退出并释放摄像头。"""
+        """询问后台运行或退出；退出前释放摄像头和服务线程。"""
+        if not self._force_quit:
+            dialog = CloseActionDialog(self, self.dark_mode)
+            dialog.exec()
+            if dialog.selected_action == "background":
+                event.ignore()
+                self._minimize_to_background()
+                return
+            if dialog.selected_action != "exit":
+                event.ignore()
+                return
+            self._force_quit = True
+
         # 停止线程前保存界面选项；运行/停止状态本身不会被记忆。
         self.save_client_settings()
 
@@ -3669,6 +3969,8 @@ class CameraWindow(QMainWindow):
         if web_server is not None and web_server.isRunning():
             web_server.stop()
             web_server.wait(3000)
+        if self._tray_icon is not None:
+            self._tray_icon.hide()
         event.accept()
 
 
@@ -3676,7 +3978,8 @@ class CameraWindow(QMainWindow):
 def main() -> int:
     """创建 Qt 应用和主窗口，然后进入事件循环。"""
     app = QApplication(sys.argv)
-    app.setApplicationName("人体检测与跟踪")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
     if ICON_PATH.is_file():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
     window = CameraWindow()

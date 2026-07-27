@@ -1,9 +1,44 @@
-.venv/
+# Python 字节码与缓存
 __pycache__/
 *.py[cod]
-.DS_Store
+*$py.class
+
+# Python 虚拟环境
+.venv/
+venv/
+env/
+ENV/
+
+# 测试、类型检查与代码质量工具缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# YOLO / Ultralytics 模型与运行输出
 *.pt
-.vscode/
-dist/
+runs/
+
+# PyInstaller 构建产物
 build/
-AlertZone.spec
+dist/
+*.spec
+
+# 编辑器配置与临时文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 日志与临时文件
+*.log
+*.tmp
+*.temp
+
+# 操作系统生成文件
+.DS_Store
+Thumbs.db
+Desktop.ini

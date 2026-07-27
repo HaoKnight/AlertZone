@@ -1,4 +1,4 @@
-"""PySide6 开发预览：代码保存后自动重启界面。
+"""AlertZone Client 源码开发预览：代码保存后自动重启界面。
 
 运行一次本脚本即可。它只使用 Python 标准库，不需要安装额外依赖。
 """
@@ -13,7 +13,7 @@ from pathlib import Path
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
-APP_FILE = PROJECT_DIR / "AlertZone_app.py"
+APP_FILE = PROJECT_DIR / "AlertZone_Client.py"
 CHECK_INTERVAL = 0.5
 
 

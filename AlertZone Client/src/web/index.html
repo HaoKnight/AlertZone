@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>人员进入监测</title>
+  <title>AlertZone Client · 局域网人员进入监测</title>
   <style>
     :root {
       --page: #eef1f4;
@@ -18,7 +18,7 @@
       --yellow: #ffd42a;
       --monitor: #0b0d10;
       --input: #ffffff;
-      --switch: #b8c0cb;
+      --switch: #e4e9f0;
       --dot: #a0a8b4;
       color-scheme: light;
     }
@@ -30,7 +30,7 @@
       --text: #e8eaf0;
       --muted: #aab2bf;
       --input: #20242c;
-      --switch: #515866;
+      --switch: #2b3340;
       --dot: #626a78;
       color-scheme: dark;
     }
@@ -92,7 +92,7 @@
       display: inline-flex;
       align-items: center;
       gap: 7px;
-      color: var(--muted);
+      color: var(--text);
       font-size: 13px;
     }
 
@@ -465,7 +465,7 @@
       opacity: 0.82;
     }
 
-    @media (max-width: 760px) {
+    @media (max-width: 920px) {
       .app {
         width: min(100% - 16px, 1180px);
         padding: 8px 0;
@@ -498,7 +498,7 @@
 
     }
 
-    @media (max-width: 760px) and (orientation: portrait) {
+    @media (max-width: 920px) {
       .topbar {
         display: grid;
         grid-template-areas:
