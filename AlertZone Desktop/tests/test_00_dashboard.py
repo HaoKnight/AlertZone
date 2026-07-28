@@ -9,15 +9,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings, Qt, QTimer
-from PySide6.QtGui import QIcon, QPixmap
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton
+from PySide6.QtCore import QEvent, QPointF, QSettings, QSize, Qt, QTimer
+from PySide6.QtGui import QIcon, QMouseEvent, QPixmap
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 
-from src.alertzone_desktop import (
+from src.AlertZone_Desktop import (
+    WINDOW_TITLE,
     AlertPopup,
     AlertSettingsDialog,
     CloseActionDialog,
+    CurrentPageStack,
     MainWindow,
+    MarqueeLabel,
     NativeDashboard,
     OtherSettingsDialog,
 )
@@ -48,7 +51,90 @@ class _PreviewHandler(BaseHTTPRequestHandler):
 
 
 class NativeDashboardTests(unittest.TestCase):
-    def test_close_dialog_offers_client_style_actions(self) -> None:
+    def test_main_window_title_uses_server_credit(self) -> None:
+        self.assertEqual(
+            WINDOW_TITLE,
+            "AlertZone Desktop · 服务端 · ©H-Knight",
+        )
+
+    def test_tray_alert_switch_syncs_with_home_button(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dashboard = NativeDashboard(settings)
+
+            class FakeWindow:
+                _dashboard = dashboard
+
+            window = FakeWindow()
+            MainWindow._on_tray_alert_toggled(window, True)
+            self.assertTrue(dashboard.alert_enabled_button.isChecked())
+            self.assertTrue(
+                settings.value("alert/enabled", False, type=bool)
+            )
+
+            class FakeAction:
+                checked = False
+
+                @staticmethod
+                def blockSignals(_blocked: bool) -> None:
+                    return
+
+                def setChecked(self, checked: bool) -> None:
+                    self.checked = checked
+
+            class FakeMainWindow:
+                _tray_alert_action = FakeAction()
+                _server_url = ""
+
+            fake_main_window = FakeMainWindow()
+            MainWindow._on_alert_enabled_changed(
+                fake_main_window,
+                True,
+            )
+            self.assertTrue(
+                fake_main_window._tray_alert_action.checked
+            )
+
+    def test_marquee_scrolls_only_when_text_does_not_fit(self) -> None:
+        label = MarqueeLabel("检测到 12 人进入监控区域")
+        label.resize(70, 28)
+        label.show()
+        label.refresh_marquee()
+        self.assertTrue(label._scroll_timer.isActive())
+        self.assertEqual(label._scroll_timer.interval(), 20)
+        self.assertNotEqual(label.displayed_text(), label.text())
+        previous_x = label._text_label.x()
+        label._advance_scroll()
+        self.assertEqual(label._text_label.x(), previous_x - 1)
+
+        label.resize(500, 28)
+        label.refresh_marquee()
+        self.assertFalse(label._scroll_timer.isActive())
+        self.assertEqual(label.displayed_text(), label.text())
+        label.hide()
+
+    def test_stack_minimum_width_follows_current_page_only(self) -> None:
+        class HintWidget(QWidget):
+            def __init__(self, width: int) -> None:
+                super().__init__()
+                self._width = width
+
+            def minimumSizeHint(self) -> QSize:
+                return QSize(self._width, 100)
+
+        stack = CurrentPageStack()
+        wide_page = HintWidget(420)
+        compact_page = HintWidget(240)
+        stack.addWidget(wide_page)
+        stack.addWidget(compact_page)
+
+        self.assertEqual(stack.minimumSizeHint().width(), 420)
+        stack.setCurrentWidget(compact_page)
+        self.assertEqual(stack.minimumSizeHint().width(), 240)
+
+    def test_close_dialog_offers_server_style_actions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = QSettings(
                 f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
@@ -112,18 +198,16 @@ class NativeDashboardTests(unittest.TestCase):
                 _alert_exit_timer = FakeTimer()
                 _background_mode = False
                 _alert_popup_allowed = MainWindow._alert_popup_allowed
+                _alert_enabled = MainWindow._alert_enabled
+                sync_count = 0
 
                 @staticmethod
                 def isMinimized() -> bool:
                     return False
 
                 @staticmethod
-                def _stop_sound() -> None:
-                    return
-
-                @staticmethod
-                def _stop_alert_live_preview() -> None:
-                    return
+                def _sync_alert_surface() -> None:
+                    FakeWindow.sync_count += 1
 
             window = FakeWindow()
             MainWindow._set_background_mode(window, True)
@@ -138,7 +222,7 @@ class NativeDashboardTests(unittest.TestCase):
             self.assertEqual(window._monitor.rearm_count, 1)
 
             MainWindow._set_background_mode(window, False)
-            self.assertTrue(window._popup.hidden)
+            self.assertEqual(window.sync_count, 3)
 
     def test_home_uses_dedicated_setting_buttons(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -166,11 +250,207 @@ class NativeDashboardTests(unittest.TestCase):
             source_label = dashboard.findChild(QLabel, "dashboardSource")
             self.assertEqual(
                 source_label.text(),
-                "数据由 AlertZone Client API 提供",
+                "数据由 AlertZone Server API 提供",
             )
             self.assertIsNone(
                 dashboard.findChild(QLabel, "dashboardFooter")
             )
+
+    def test_narrow_window_wraps_controls_without_minimum_size(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dashboard = NativeDashboard(settings)
+            flow = dashboard._controls_layout
+            wide_width = flow.preferred_single_row_width()
+            dashboard._controls.sync_text_fit_widths()
+            compact_width = dashboard._controls.minimum_full_width()
+            for button in dashboard._controls._buttons:
+                self.assertGreaterEqual(
+                    button.minimumWidth(),
+                    button.fontMetrics().horizontalAdvance(
+                        button.text()
+                    )
+                    + 10,
+                )
+
+            self.assertGreater(
+                flow.heightForWidth(wide_width // 2),
+                flow.heightForWidth(wide_width),
+            )
+            self.assertLessEqual(compact_width, wide_width)
+            self.assertEqual(
+                flow.heightForWidth(compact_width),
+                flow.heightForWidth(wide_width),
+            )
+            self.assertGreater(
+                flow.heightForWidth(compact_width - 1),
+                flow.heightForWidth(compact_width),
+            )
+            self.assertEqual(dashboard.preview_label.minimumWidth(), 0)
+            self.assertEqual(
+                MainWindow.minimumSizeHint(None),
+                QSize(0, 0),
+            )
+
+    def test_short_monitor_uses_compact_status_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dashboard = NativeDashboard(settings)
+
+            dashboard.monitor_stack.resize(400, 190)
+            dashboard._sync_status_density()
+            self.assertEqual(dashboard._status_density, "compact")
+            self.assertEqual(dashboard.status_icon.width(), 58)
+            self.assertEqual(
+                dashboard.status_title.property("statusDensity"),
+                "compact",
+            )
+            self.assertEqual(
+                dashboard._idle_layout.contentsMargins().top(),
+                6,
+            )
+
+            dashboard.monitor_stack.resize(400, 300)
+            dashboard._sync_status_density()
+            self.assertEqual(dashboard._status_density, "normal")
+            self.assertEqual(dashboard.status_icon.width(), 76)
+
+    def test_alert_overlays_follow_actual_image_bounds(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dashboard = NativeDashboard(settings)
+            canvas = dashboard.alert_image
+            canvas.resize(300, 300)
+            canvas._source_pixmap = QPixmap(400, 200)
+            canvas.configure_action("确定位置和大小", True)
+            canvas._position_overlays()
+
+            image_rect = canvas.displayed_pixmap_rect()
+            self.assertEqual(image_rect.top(), 75)
+            self.assertEqual(image_rect.height(), 150)
+            compact_font_size = canvas.detail_label.font().pixelSize()
+            compact_action_font_size = (
+                canvas.exit_button.font().pixelSize()
+            )
+            self.assertEqual(compact_font_size, 10)
+            self.assertEqual(compact_action_font_size, 12)
+            self.assertLessEqual(
+                canvas.exit_button.width(),
+                image_rect.width(),
+            )
+            self.assertGreater(
+                canvas.exit_button.geometry().center().y(),
+                image_rect.center().y(),
+            )
+            self.assertLess(
+                canvas.exit_button.geometry().bottom(),
+                canvas.detail_label.geometry().top(),
+            )
+            self.assertEqual(
+                canvas.detail_label.property("overlaySize"),
+                "small",
+            )
+            self.assertIn(
+                "font-size: 10px",
+                canvas.detail_label.styleSheet(),
+            )
+            self.assertEqual(
+                canvas.countdown_label.geometry().top(),
+                image_rect.top() + 8,
+            )
+            self.assertEqual(
+                canvas.countdown_label.geometry().center().x(),
+                image_rect.center().x(),
+            )
+            for overlay in (
+                canvas.detail_label,
+                canvas.countdown_label,
+                canvas.exit_button,
+            ):
+                self.assertGreaterEqual(
+                    overlay.geometry().top(),
+                    image_rect.top(),
+                )
+                self.assertLessEqual(
+                    overlay.geometry().bottom(),
+                    image_rect.bottom(),
+                )
+
+            canvas.resize(1000, 600)
+            canvas._source_pixmap = QPixmap(1000, 600)
+            canvas._position_overlays()
+            self.assertEqual(
+                canvas.detail_label.font().pixelSize(),
+                20,
+            )
+            self.assertEqual(
+                canvas.exit_button.font().pixelSize(),
+                26,
+            )
+            self.assertGreater(
+                canvas.exit_button.height(),
+                36,
+            )
+            self.assertEqual(
+                canvas.detail_label.property("overlaySize"),
+                "large",
+            )
+            self.assertIn(
+                "font-size: 20px",
+                canvas.detail_label.styleSheet(),
+            )
+            self.assertGreater(
+                canvas.detail_label.height(),
+                compact_font_size + 12,
+            )
+            self.assertEqual(
+                canvas.detail_label.displayed_text(),
+                canvas.detail_label.text(),
+            )
+
+    def test_all_controls_reveal_from_topbar_hover_when_narrow(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dashboard = NativeDashboard(settings)
+            buttons = [
+                dashboard.alert_enabled_button,
+                dashboard.continuous_button,
+                dashboard.preview_button,
+                dashboard.popup_settings_button,
+                dashboard.alert_settings_button,
+                dashboard.other_settings_button,
+            ]
+
+            dashboard.resize(360, 600)
+            dashboard._controls_trigger_hovered = False
+            dashboard._controls_panel_hovered = False
+            dashboard._sync_controls_card_visibility()
+            self.assertTrue(dashboard._controls_card.isHidden())
+            self.assertTrue(
+                all(not button.isHidden() for button in buttons)
+            )
+
+            dashboard.set_controls_trigger_hovered(True)
+            self.assertFalse(dashboard._controls_card.isHidden())
+
+            dashboard.set_controls_trigger_hovered(False)
+            dashboard._sync_controls_card_visibility()
+            self.assertTrue(dashboard._controls_card.isHidden())
+
+            dashboard.resize(
+                dashboard.preferred_single_row_width() + 20,
+                600,
+            )
+            dashboard._sync_controls_card_visibility()
+            self.assertFalse(dashboard._controls_card.isHidden())
 
     def test_web_style_status_icon_and_popup_modes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -202,11 +482,194 @@ class NativeDashboardTests(unittest.TestCase):
             self.assertEqual(dashboard.status_icon.text(), "!")
 
             popup = AlertPopup(settings)
+            self.assertEqual(popup.minimumSize(), QSize(0, 0))
+            self.assertEqual(popup.minimumSizeHint(), QSize(0, 0))
             popup.set_display_mode("red")
             self.assertEqual(popup.display_mode(), "zoom-red")
             for mode in ("zoom", "zoom-red", "live", "live-red"):
                 popup.set_display_mode(mode)
                 self.assertFalse(popup._image.isHidden())
+            popup.show_alert(2, "2026-07-28 10:30:00")
+            APP.processEvents()
+            self.assertEqual(popup.minimumSize(), QSize(0, 0))
+            popup.set_countdown_text("10 秒后退出告警")
+            self.assertEqual(
+                popup._title.text(),
+                "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️",
+            )
+            self.assertIs(popup._title.parent(), popup)
+            self.assertIs(popup._detail.parent(), popup._image)
+            self.assertIs(popup._countdown.parent(), popup._image)
+            self.assertIs(popup._button.parent(), popup._image)
+            self.assertEqual(
+                popup._detail.text(),
+                "检测到 2 人进入监控区域",
+            )
+            self.assertEqual(
+                popup._countdown.text(),
+                "10 秒后退出告警",
+            )
+            self.assertEqual(popup._button.text(), "退出告警")
+            self.assertTrue(popup._button.isHidden())
+            popup.hide()
+
+            popup.show_placement_preview()
+            self.assertEqual(popup._title.text(), "弹窗位置")
+            self.assertEqual(
+                popup._button.text(),
+                "确定位置和大小",
+            )
+            self.assertFalse(popup._button.isHidden())
+            popup.hide()
+
+    def test_enabled_alert_can_render_in_main_dashboard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dashboard = NativeDashboard(settings)
+            dismissed = []
+            dashboard.alert_dismiss_requested.connect(
+                lambda: dismissed.append(True)
+            )
+
+            dashboard.show_alert(
+                2,
+                "2026-07-28 10:30:00",
+                "live-red",
+            )
+
+            self.assertTrue(dashboard.is_alert_active())
+            self.assertEqual(
+                dashboard.monitor_stack.currentWidget(),
+                dashboard.alert_panel,
+            )
+            self.assertTrue(
+                dashboard.alert_panel.property("redAlert")
+            )
+            self.assertEqual(
+                dashboard.alert_title.text(),
+                "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️",
+            )
+            self.assertIn("检测到 2 人", dashboard.alert_detail.text())
+            self.assertIs(
+                dashboard.alert_detail.parent(),
+                dashboard.alert_image,
+            )
+            dashboard.set_alert_countdown("10 秒后退出告警")
+            self.assertEqual(
+                dashboard.alert_countdown.text(),
+                "10 秒后退出告警",
+            )
+            self.assertIs(
+                dashboard.alert_countdown.parent(),
+                dashboard.alert_image,
+            )
+            self.assertTrue(dashboard.alert_exit_button.isHidden())
+            hover_position = QPointF(
+                dashboard.alert_image.width() / 2,
+                dashboard.alert_image.height() / 2,
+            )
+            hover_event = QMouseEvent(
+                QEvent.Type.MouseMove,
+                hover_position,
+                hover_position,
+                hover_position,
+                Qt.MouseButton.NoButton,
+                Qt.MouseButton.NoButton,
+                Qt.KeyboardModifier.NoModifier,
+            )
+            dashboard.alert_image.mouseMoveEvent(hover_event)
+            self.assertFalse(dashboard.alert_exit_button.isHidden())
+            dashboard.alert_exit_button.click()
+            self.assertEqual(dismissed, [True])
+            dashboard.hide_alert()
+            self.assertFalse(dashboard.is_alert_active())
+
+    def test_intrusion_is_not_ignored_while_main_window_is_open(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            settings.setValue("alert/enabled", True)
+
+            class FakeTimer:
+                stopped = False
+
+                def stop(self) -> None:
+                    self.stopped = True
+
+            class FakeWindow:
+                _settings = settings
+                _alert_exit_timer = FakeTimer()
+                _latest_person_present = False
+                _current_alert_event = 0
+                _current_alert_people = 1
+                _current_alert_timestamp = ""
+                _alert_active = False
+                surface_syncs = 0
+                sound_plays = 0
+                exit_syncs = 0
+                _alert_enabled = MainWindow._alert_enabled
+
+                def _sync_alert_surface(self) -> None:
+                    self.surface_syncs += 1
+
+                def _play_configured_sound(self) -> None:
+                    self.sound_plays += 1
+
+                @staticmethod
+                def _start_alert_live_preview() -> None:
+                    return
+
+                @staticmethod
+                def _request_intrusion_image(_event_id: int) -> None:
+                    return
+
+                def _sync_alert_exit_timer(
+                    self,
+                    restart: bool = False,
+                ) -> None:
+                    self.exit_syncs += int(restart)
+
+            window = FakeWindow()
+            MainWindow._show_intrusion(
+                window,
+                {
+                    "intrusion_event_id": 7,
+                    "intrusion_people_count": 2,
+                    "person_present": True,
+                },
+            )
+
+            self.assertTrue(window._alert_active)
+            self.assertEqual(window._current_alert_event, 7)
+            self.assertEqual(window._current_alert_people, 2)
+            self.assertEqual(window.surface_syncs, 1)
+            self.assertEqual(window.sound_plays, 1)
+            self.assertEqual(window.exit_syncs, 1)
+
+    def test_alert_frames_do_not_expand_the_window_size_hint(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dashboard = NativeDashboard(settings)
+            preferred_size = dashboard.alert_image.sizeHint()
+
+            for width, height in ((420, 260), (700, 480), (360, 220)):
+                dashboard.alert_image.resize(width, height)
+                self.assertTrue(
+                    dashboard.set_alert_image(_PreviewHandler.image)
+                )
+                self.assertEqual(
+                    dashboard.alert_image.sizeHint(),
+                    preferred_size,
+                )
+                self.assertEqual(
+                    dashboard.alert_image.minimumSizeHint(),
+                    QSize(0, 0),
+                )
 
     def test_alert_dialog_has_no_theme_or_enable_switch(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -244,7 +707,7 @@ class NativeDashboardTests(unittest.TestCase):
                     dialog.auto_exit_seconds.itemData(index)
                     for index in range(dialog.auto_exit_seconds.count())
                 ],
-                [5, 10, 15, 30, 60, 0],
+                [2, 5, 10, 15, 0],
             )
             self.assertFalse(hasattr(dialog, "continuous_enabled"))
             self.assertFalse(hasattr(dialog, "theme_mode"))
@@ -280,7 +743,7 @@ class NativeDashboardTests(unittest.TestCase):
                 def stop(self) -> None:
                     self.active = False
 
-                def start(self, milliseconds: int) -> None:
+                def start(self, milliseconds: int = 0) -> None:
                     self.active = True
                     self.starts.append(milliseconds)
 
@@ -291,18 +754,34 @@ class NativeDashboardTests(unittest.TestCase):
                 _settings = settings
                 _popup = FakePopup()
                 _alert_exit_timer = FakeTimer()
+                _alert_countdown_timer = FakeTimer()
+                _alert_active = True
                 _latest_person_present = True
                 _alert_auto_exit_seconds = (
                     MainWindow._alert_auto_exit_seconds
                 )
 
+                def __init__(self) -> None:
+                    self.countdown_texts = []
+
+                def _set_alert_countdown(self, text: str) -> None:
+                    self.countdown_texts.append(text)
+
             window = FakeWindow()
             MainWindow._sync_alert_exit_timer(window)
             self.assertEqual(window._alert_exit_timer.starts, [])
+            self.assertEqual(
+                window.countdown_texts[-1],
+                "等待人员离开",
+            )
 
             window._latest_person_present = False
             MainWindow._sync_alert_exit_timer(window)
             self.assertEqual(window._alert_exit_timer.starts, [10000])
+            self.assertEqual(
+                window.countdown_texts[-1],
+                "10 秒后退出告警",
+            )
 
             window._latest_person_present = True
             MainWindow._sync_alert_exit_timer(window)
@@ -343,6 +822,54 @@ class NativeDashboardTests(unittest.TestCase):
                 settings.value("alert/enabled", False, type=bool)
             )
             self.assertEqual(changes, [True])
+
+    def test_theme_button_cycles_and_follow_system_updates_live(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+
+            class FakeWindow:
+                _set_theme_mode = MainWindow._set_theme_mode
+                _update_theme_button = MainWindow._update_theme_button
+
+                def __init__(self) -> None:
+                    self._settings = settings
+                    self._theme_mode = "light"
+                    self._theme_button = QPushButton()
+                    self.system_theme = "dark"
+                    self.applied_themes = []
+
+                def _resolved_theme(self) -> str:
+                    if self._theme_mode in {"light", "dark"}:
+                        return self._theme_mode
+                    return self.system_theme
+
+                def _apply_theme(self, theme: str) -> None:
+                    self.applied_themes.append(theme)
+
+            window = FakeWindow()
+            window._update_theme_button()
+            self.assertEqual(window._theme_button.text(), "浅色主题")
+
+            MainWindow._toggle_theme(window)
+            self.assertEqual(window._theme_mode, "dark")
+            self.assertEqual(window._theme_button.text(), "深色主题")
+            MainWindow._toggle_theme(window)
+            self.assertEqual(window._theme_mode, "follow-system")
+            self.assertEqual(window._theme_button.text(), "跟随系统")
+            self.assertEqual(window.applied_themes[-1], "dark")
+
+            window.system_theme = "light"
+            MainWindow._on_system_theme_changed(window, None)
+            self.assertEqual(window.applied_themes[-1], "light")
+
+            MainWindow._toggle_theme(window)
+            self.assertEqual(window._theme_mode, "light")
+            self.assertEqual(
+                settings.value("appearance/theme_mode"),
+                "light",
+            )
 
     def test_sound_can_be_disabled(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -393,7 +920,7 @@ class NativeDashboardTests(unittest.TestCase):
             self.assertEqual(dashboard.presence_value.text(), "01:05")
             self.assertEqual(dashboard.fps_value.text(), "12.4")
 
-    def test_preview_reads_client_jpeg_endpoint(self) -> None:
+    def test_preview_reads_server_jpeg_endpoint(self) -> None:
         server = ThreadingHTTPServer(("127.0.0.1", 0), _PreviewHandler)
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()

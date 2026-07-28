@@ -1,12 +1,13 @@
-"""AlertZone Client 的独立局域网桌面前端。
+"""AlertZone Server 的独立局域网桌面前端。
 
-界面完全由 PySide6 原生控件绘制，只通过 Client 的 JSON、JPEG 和控制接口
-获取状态、预览与报警事件，不加载或依赖 Client 的 Web 页面。
+界面完全由 PySide6 原生控件绘制，只通过服务端的 JSON、JPEG 和控制接口
+获取状态、预览与报警事件，不加载或依赖服务端的 Web 页面。
 """
 
 from __future__ import annotations
 
 import json
+import math
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,8 @@ from PySide6.QtCore import (
     QEvent,
     QObject,
     QPoint,
+    QRect,
+    QRectF,
     QSettings,
     QSize,
     Qt,
@@ -25,7 +28,16 @@ from PySide6.QtCore import (
     QUrl,
     Signal,
 )
-from PySide6.QtGui import QCloseEvent, QColor, QIcon, QPalette, QPixmap
+from PySide6.QtGui import (
+    QCloseEvent,
+    QColor,
+    QFontMetrics,
+    QIcon,
+    QPainter,
+    QPalette,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtNetwork import (
     QNetworkAccessManager,
     QNetworkReply,
@@ -41,6 +53,8 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
+    QLayoutItem,
     QLineEdit,
     QMainWindow,
     QMenu,
@@ -63,6 +77,7 @@ except ImportError:
     QMediaPlayer = None
 
 APP_NAME = "AlertZone Desktop"
+WINDOW_TITLE = f"{APP_NAME} · ©H-Knight"
 ORGANIZATION_NAME = "AlertZone"
 DEFAULT_PORT = 8765
 POLL_INTERVAL_MS = 600
@@ -75,14 +90,19 @@ ALERT_DISPLAY_OPTIONS = (
 )
 ALERT_IMAGE_MODES = {"zoom", "zoom-red", "live", "live-red"}
 ALERT_LIVE_MODES = {"live", "live-red"}
+THEME_MODES = ("light", "dark", "follow-system")
+THEME_LABELS = {
+    "light": "浅色主题",
+    "dark": "深色主题",
+    "follow-system": "跟随系统",
+}
 
 APP_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = APP_DIR.parent
-ROOT_DIR = PROJECT_DIR.parent
 ICON_CANDIDATES = (
+    PROJECT_DIR / "icon" / "icon.png",
+    APP_DIR / "icon" / "icon.png",
     PROJECT_DIR / "icon.png",
-    ROOT_DIR / "AlertZone Client" / "icon" / "icon.png",
-    ROOT_DIR / "icon" / "icon.png",
     APP_DIR / "icon.png",
 )
 
@@ -108,6 +128,427 @@ def normalize_alert_display_mode(value: Any) -> str:
     if mode == "yellow":
         return "zoom"
     return mode if mode in dict(ALERT_DISPLAY_OPTIONS) else "zoom"
+
+
+class FlowLayout(QLayout):
+    """按可用宽度自动换行，避免小窗口压缩或截断按钮。"""
+
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        margins: tuple[int, int, int, int] = (0, 0, 0, 0),
+        horizontal_spacing: int = 8,
+        vertical_spacing: int = 8,
+        expand_items: bool = False,
+        justify_rows: bool = False,
+        balanced_wrap: bool = False,
+        split_index: int | None = None,
+        center_vertically: bool = False,
+        wrap_at_split: bool = False,
+        compress_items: bool = False,
+    ) -> None:
+        super().__init__(parent)
+        self._items: list[QLayoutItem] = []
+        self._horizontal_spacing = horizontal_spacing
+        self._vertical_spacing = vertical_spacing
+        self._expand_items = expand_items
+        self._justify_rows = justify_rows
+        self._balanced_wrap = balanced_wrap
+        self._split_index = split_index
+        self._center_vertically = center_vertically
+        self._wrap_at_split = wrap_at_split
+        self._compress_items = compress_items
+        self.setContentsMargins(*margins)
+
+    def addItem(self, item: QLayoutItem) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def itemAt(self, index: int) -> QLayoutItem | None:
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index: int) -> QLayoutItem | None:
+        return (
+            self._items.pop(index)
+            if 0 <= index < len(self._items)
+            else None
+        )
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect: QRect) -> None:
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self) -> QSize:
+        return QSize(
+            self.preferred_single_row_width(),
+            self._single_row_height(),
+        )
+
+    def minimumSize(self) -> QSize:
+        size = QSize()
+        for item in self._visible_items():
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(
+            margins.left() + margins.right(),
+            margins.top() + margins.bottom(),
+        )
+        return size
+
+    def preferred_single_row_width(self) -> int:
+        margins = self.contentsMargins()
+        items = self._visible_items()
+        item_width = sum(
+            item.sizeHint().width() for item in items
+        )
+        gaps = max(len(items) - 1, 0) * self._horizontal_spacing
+        return (
+            margins.left()
+            + item_width
+            + gaps
+            + margins.right()
+        )
+
+    def minimum_single_row_width(self) -> int:
+        margins = self.contentsMargins()
+        items = self._visible_items()
+        item_width = sum(
+            item.minimumSize().width() for item in items
+        )
+        gaps = max(len(items) - 1, 0) * self._horizontal_spacing
+        return (
+            margins.left()
+            + item_width
+            + gaps
+            + margins.right()
+        )
+
+    def _single_row_height(self) -> int:
+        margins = self.contentsMargins()
+        item_height = max(
+            (
+                item.sizeHint().height()
+                for item in self._visible_items()
+            ),
+            default=0,
+        )
+        return margins.top() + item_height + margins.bottom()
+
+    def _do_layout(self, rect: QRect, test_only: bool) -> int:
+        margins = self.contentsMargins()
+        effective = rect.adjusted(
+            margins.left(),
+            margins.top(),
+            -margins.right(),
+            -margins.bottom(),
+        )
+        available_width = max(effective.width(), 0)
+        rows = self._layout_rows(available_width)
+        content_height = sum(
+            max(
+                (item.sizeHint().height() for item in row),
+                default=0,
+            )
+            for row in rows
+        ) + self._vertical_spacing * max(len(rows) - 1, 0)
+        y = effective.y()
+        if self._center_vertically:
+            y += max(
+                (effective.height() - content_height) // 2,
+                0,
+            )
+
+        for row_index, row in enumerate(rows):
+            hints = [item.sizeHint() for item in row]
+            widths = [hint.width() for hint in hints]
+            line_height = max(
+                (hint.height() for hint in hints),
+                default=0,
+            )
+            base_gap = self._horizontal_spacing
+            natural_width = sum(widths) + base_gap * max(
+                len(row) - 1,
+                0,
+            )
+            if (
+                self._compress_items
+                and len(rows) == 1
+                and natural_width > available_width
+            ):
+                minimums = [
+                    item.minimumSize().width() for item in row
+                ]
+                widths = self._shrink_widths(
+                    widths,
+                    minimums,
+                    max(
+                        available_width
+                        - base_gap * max(len(row) - 1, 0),
+                        0,
+                    ),
+                )
+                natural_width = (
+                    sum(widths)
+                    + base_gap * max(len(row) - 1, 0)
+                )
+            extra = max(available_width - natural_width, 0)
+            x = effective.x()
+            gap = float(base_gap)
+            split_spacer = 0
+
+            if (
+                len(rows) == 1
+                and self._split_index is not None
+                and 0 < self._split_index < len(row)
+            ):
+                split_spacer = extra
+            elif self._expand_items and row:
+                extra_per_item, remainder = divmod(extra, len(row))
+                widths = [
+                    width
+                    + extra_per_item
+                    + (1 if index < remainder else 0)
+                    for index, width in enumerate(widths)
+                ]
+            elif self._justify_rows and len(row) > 1:
+                gap += extra / (len(row) - 1)
+            elif self._justify_rows and len(row) == 1:
+                x += extra // 2
+
+            for index, (item, hint, item_width) in enumerate(
+                zip(row, hints, widths, strict=True)
+            ):
+                if (
+                    split_spacer
+                    and index == self._split_index
+                ):
+                    x += split_spacer
+                if not test_only:
+                    item.setGeometry(
+                        QRect(
+                            QPoint(
+                                round(x),
+                                y
+                                + max(
+                                    (
+                                        line_height
+                                        - hint.height()
+                                    )
+                                    // 2,
+                                    0,
+                                ),
+                            ),
+                            QSize(item_width, hint.height()),
+                        )
+                    )
+                x += item_width + gap
+
+            y += line_height
+            if row_index < len(rows) - 1:
+                y += self._vertical_spacing
+
+        return (
+            y
+            - rect.y()
+            + margins.bottom()
+        )
+
+    @staticmethod
+    def _shrink_widths(
+        widths: list[int],
+        minimums: list[int],
+        target_width: int,
+    ) -> list[int]:
+        result = widths.copy()
+        overflow = max(sum(result) - target_width, 0)
+        while overflow:
+            flexible = [
+                index
+                for index, width in enumerate(result)
+                if width > minimums[index]
+            ]
+            if not flexible:
+                break
+            share = max(math.ceil(overflow / len(flexible)), 1)
+            for index in flexible:
+                reduction = min(
+                    share,
+                    result[index] - minimums[index],
+                    overflow,
+                )
+                result[index] -= reduction
+                overflow -= reduction
+                if not overflow:
+                    break
+        return result
+
+    def _layout_rows(
+        self,
+        available_width: int,
+    ) -> list[list[QLayoutItem]]:
+        items = self._visible_items()
+        if not items:
+            return []
+        minimum_content_width = (
+            self.minimum_single_row_width()
+            - self.contentsMargins().left()
+            - self.contentsMargins().right()
+        )
+        if (
+            self._compress_items
+            and available_width >= minimum_content_width
+        ):
+            return [items]
+        maximum_items = len(items)
+        preferred_content_width = (
+            self.preferred_single_row_width()
+            - self.contentsMargins().left()
+            - self.contentsMargins().right()
+        )
+        if self._balanced_wrap and available_width > 0:
+            row_count = max(
+                math.ceil(
+                    preferred_content_width / available_width
+                ),
+                1,
+            )
+            maximum_items = max(
+                math.ceil(len(items) / row_count),
+                1,
+            )
+
+        rows: list[list[QLayoutItem]] = []
+        current_row: list[QLayoutItem] = []
+        current_width = 0
+        force_split = (
+            self._wrap_at_split
+            and self._split_index is not None
+            and preferred_content_width > available_width
+        )
+        for index, item in enumerate(items):
+            if (
+                force_split
+                and index == self._split_index
+                and current_row
+            ):
+                rows.append(current_row)
+                current_row = []
+                current_width = 0
+            item_width = item.sizeHint().width()
+            proposed_width = (
+                current_width
+                + (self._horizontal_spacing if current_row else 0)
+                + item_width
+            )
+            if current_row and (
+                proposed_width > available_width
+                or len(current_row) >= maximum_items
+            ):
+                rows.append(current_row)
+                current_row = []
+                current_width = 0
+            if current_row:
+                current_width += self._horizontal_spacing
+            current_row.append(item)
+            current_width += item_width
+        if current_row:
+            rows.append(current_row)
+        return rows
+
+    def _visible_items(self) -> list[QLayoutItem]:
+        return [item for item in self._items if not item.isEmpty()]
+
+
+class HoverRevealControls(QWidget):
+    """六个按钮的自适应流式布局容器。"""
+
+    def __init__(
+        self,
+        buttons: list[QPushButton],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._buttons = buttons
+        self._spacing = 6
+        self.setObjectName("dashboardControls")
+
+        self.flow_layout = FlowLayout(
+            self,
+            horizontal_spacing=self._spacing,
+            vertical_spacing=4,
+            expand_items=True,
+            balanced_wrap=True,
+            compress_items=True,
+        )
+        for button in buttons:
+            button.setMinimumWidth(
+                button.fontMetrics().horizontalAdvance(button.text())
+                + 12
+            )
+            self.flow_layout.addWidget(button)
+
+    def preferred_full_width(self) -> int:
+        return (
+            sum(button.sizeHint().width() for button in self._buttons)
+            + max(len(self._buttons) - 1, 0) * self._spacing
+        )
+
+    def minimum_full_width(self) -> int:
+        return self.flow_layout.minimum_single_row_width()
+
+    def sync_text_fit_widths(self) -> None:
+        """按当前主题字体计算安全宽度，避免压缩后遮挡四字标签。"""
+        for button in self._buttons:
+            button.ensurePolished()
+            text_width = button.fontMetrics().horizontalAdvance(
+                button.text()
+            )
+            button.setMinimumWidth(text_width + 10)
+        self.flow_layout.invalidate()
+        self.updateGeometry()
+
+class HoverFrame(QFrame):
+    """报告鼠标是否位于整个栏位（包含其子控件）内。"""
+
+    hover_changed = Signal(bool)
+
+    def enterEvent(self, event: Any) -> None:
+        self.hover_changed.emit(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:
+        QTimer.singleShot(30, self._emit_leave_if_needed)
+        super().leaveEvent(event)
+
+    def _emit_leave_if_needed(self) -> None:
+        if not self.underMouse():
+            self.hover_changed.emit(False)
+
+
+class CurrentPageStack(QStackedWidget):
+    """只使用当前页面的最小尺寸，避免隐藏页面限制窗口缩放。"""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.currentChanged.connect(
+            lambda _index: self.updateGeometry()
+        )
+
+    def minimumSizeHint(self) -> QSize:
+        current = self.currentWidget()
+        return (
+            current.minimumSizeHint()
+            if current is not None
+            else QSize(0, 0)
+        )
 
 
 class DownwardComboBox(QComboBox):
@@ -160,7 +601,7 @@ def normalize_server_url(raw_value: str) -> str:
     """规范化局域网地址，并在未填写端口时使用 8765。"""
     value = raw_value.strip()
     if not value:
-        raise ValueError("请输入 AlertZone Client 的局域网地址")
+        raise ValueError("请输入 AlertZone Server 的局域网地址")
     if "://" not in value:
         value = f"http://{value}"
 
@@ -195,17 +636,20 @@ class ConnectionPage(QWidget):
 
         card = QFrame()
         card.setObjectName("connectionCard")
-        card.setMinimumWidth(520)
         card.setMaximumWidth(620)
+        card.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(36, 34, 36, 34)
         card_layout.setSpacing(14)
 
-        title = QLabel("连接 AlertZone Client")
+        title = QLabel("连接 AlertZone Server")
         title.setObjectName("connectionTitle")
         subtitle = QLabel(
-            "输入 AlertZone Client 主界面左下角显示的局域网地址。"
-            "\n本机需要与 Client 处于同一局域网。"
+            "输入 AlertZone Server 主界面左下角显示的局域网地址。"
+            "\n本机需要与服务端处于同一局域网。"
         )
         subtitle.setObjectName("connectionSubtitle")
         subtitle.setWordWrap(True)
@@ -247,6 +691,177 @@ class ConnectionPage(QWidget):
         self.status_label.setText(message)
 
 
+class MarqueeLabel(QLabel):
+    """空间不足时以像素级动画滚动，空间恢复后居中显示。"""
+
+    def __init__(
+        self,
+        text: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._full_text = ""
+        self._scroll_offset = 0
+        self._text_width = 0
+        self._scroll_cycle_width = 0
+        self._bubble_background = QColor(0, 0, 0, 0)
+        self._bubble_border = QColor(0, 0, 0, 0)
+        self._bubble_radius = 0.0
+        self._text_label = QLabel(self)
+        self._text_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft
+            | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._text_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self._scroll_timer = QTimer(self)
+        self._scroll_timer.setInterval(20)
+        self._scroll_timer.timeout.connect(self._advance_scroll)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        self._full_text = str(text)
+        self._scroll_offset = 0
+        self._refresh_display()
+
+    def text(self) -> str:
+        return self._full_text
+
+    def displayed_text(self) -> str:
+        return self._text_label.text()
+
+    def natural_text_width(self) -> int:
+        return (
+            self.fontMetrics().horizontalAdvance(self._full_text)
+            + 22
+        )
+
+    def set_bubble_style(
+        self,
+        background: QColor,
+        border: QColor,
+    ) -> None:
+        self._bubble_background = QColor(background)
+        self._bubble_border = QColor(border)
+        self.update()
+
+    def set_bubble_radius(self, radius: float) -> None:
+        self._bubble_radius = max(radius, 0.0)
+        self.update()
+
+    def paintEvent(self, event: Any) -> None:
+        if self._bubble_background.alpha() > 0:
+            painter = QPainter(self)
+            painter.setRenderHint(
+                QPainter.RenderHint.Antialiasing,
+                True,
+            )
+            inset = 0.5 if self._bubble_border.alpha() > 0 else 0.0
+            bubble_rect = QRectF(self.rect()).adjusted(
+                inset,
+                inset,
+                -inset,
+                -inset,
+            )
+            radius = min(
+                self._bubble_radius,
+                bubble_rect.height() / 2,
+            )
+            painter.setBrush(self._bubble_background)
+            painter.setPen(
+                QPen(self._bubble_border, 1)
+                if self._bubble_border.alpha() > 0
+                else Qt.PenStyle.NoPen
+            )
+            painter.drawRoundedRect(
+                bubble_rect,
+                radius,
+                radius,
+            )
+            painter.end()
+        super().paintEvent(event)
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._refresh_display()
+
+    def showEvent(self, event: Any) -> None:
+        super().showEvent(event)
+        self._refresh_display()
+
+    def hideEvent(self, event: Any) -> None:
+        self._scroll_timer.stop()
+        super().hideEvent(event)
+
+    def refresh_marquee(self) -> None:
+        self._refresh_display()
+
+    def _refresh_display(self) -> None:
+        super().setText("")
+        self._text_label.setFont(self.font())
+        text_color = self.palette().color(
+            QPalette.ColorRole.WindowText
+        )
+        self._text_label.setStyleSheet(
+            "background: transparent;"
+            "border: none;"
+            "padding: 0;"
+            f"color: {text_color.name(QColor.NameFormat.HexArgb)};"
+        )
+        if not self._full_text or self.width() <= 0:
+            self._scroll_timer.stop()
+            self._text_label.setText(self._full_text)
+            return
+        available_width = max(self.width() - 18, 1)
+        self._text_width = self.fontMetrics().horizontalAdvance(
+            self._full_text
+        )
+        if self._text_width <= available_width:
+            self._scroll_timer.stop()
+            self._scroll_offset = 0
+            self._text_label.setText(self._full_text)
+            self._text_label.setGeometry(
+                max((self.width() - self._text_width) // 2, 0),
+                0,
+                self._text_width,
+                self.height(),
+            )
+            return
+        gap_width = max(
+            self.fontMetrics().horizontalAdvance("　　"),
+            24,
+        )
+        self._scroll_cycle_width = self._text_width + gap_width
+        self._text_label.setText(
+            f"{self._full_text}　　{self._full_text}"
+        )
+        self._position_scrolling_text()
+        if self.isVisible():
+            self._scroll_timer.start()
+
+    def _advance_scroll(self) -> None:
+        if not self._scroll_cycle_width:
+            return
+        self._scroll_offset = (
+            self._scroll_offset + 1
+        ) % self._scroll_cycle_width
+        self._position_scrolling_text()
+
+    def _position_scrolling_text(self) -> None:
+        repeated_width = (
+            self._text_width * 2
+            + max(self._scroll_cycle_width - self._text_width, 0)
+        )
+        self._text_label.setGeometry(
+            9 - self._scroll_offset,
+            0,
+            repeated_width,
+            self.height(),
+        )
+
+
 class AlertPopup(QWidget):
     """不唤醒主窗口的置顶报警小窗，也用于位置和尺寸预览。"""
 
@@ -268,37 +883,42 @@ class AlertPopup(QWidget):
             settings.value("alert/display_mode", "zoom")
         )
         self.setWindowTitle("AlertZone 报警")
-        self.setMinimumSize(320, 210)
+        self.setMinimumSize(0, 0)
         self.resize(460, 310)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
 
-        self._title = QLabel("⚠ 检测到有人进入监控区域")
+        self._image = AlertCanvas()
+        self._image.setObjectName("alertImage")
+        self._image.setMinimumHeight(0)
+        self._image.dismiss_requested.connect(self._accept)
+        self._detail = self._image.detail_label
+        self._countdown = self._image.countdown_label
+        self._button = self._image.exit_button
+
+        self._title = QLabel(
+            "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️"
+        )
         self._title.setObjectName("alertTitle")
         self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._detail = QLabel("")
-        self._detail.setObjectName("alertDetail")
-        self._detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._detail.setWordWrap(True)
-        self._image = QLabel("等待报警截图")
-        self._image.setObjectName("alertImage")
-        self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._image.setMinimumHeight(90)
-        self._image.setScaledContents(False)
-        self._image_pixmap: QPixmap | None = None
-
-        self._button = QPushButton("我知道了")
-        self._button.setObjectName("alertButton")
-        self._button.clicked.connect(self._accept)
+        self._title.setMinimumWidth(0)
+        self._title.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(3)
+        layout.setSizeConstraint(
+            QLayout.SizeConstraint.SetNoConstraint
+        )
         layout.addWidget(self._title)
-        layout.addWidget(self._detail)
         layout.addWidget(self._image, 1)
-        layout.addWidget(self._button)
 
         self.apply_theme("light")
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
 
     def apply_theme(self, theme: str) -> None:
         """应用桌面主题；具体告警配色由当前显示方式决定。"""
@@ -323,7 +943,6 @@ class AlertPopup(QWidget):
         if mode in {"zoom-red", "live-red"}:
             background = "#e00018"
             title = "#ffffff"
-            detail = "#ffffff"
             image_background = "#290006"
             image_text = "#ffd7dc"
             border = "#ffffff"
@@ -332,8 +951,7 @@ class AlertPopup(QWidget):
             button_text = "#a50012"
         elif self._theme == "dark":
             background = "#24171a"
-            title = "#ff8f95"
-            detail = "#f3c7ca"
+            title = "#ffb0b5"
             image_background = "#10090b"
             image_text = "#d99da2"
             border = "#713a40"
@@ -343,7 +961,6 @@ class AlertPopup(QWidget):
         else:
             background = "#fff5f5"
             title = "#b91c1c"
-            detail = "#4b1919"
             image_background = "#2b1111"
             image_text = "#e9b8bc"
             border = "#efb4b4"
@@ -354,27 +971,51 @@ class AlertPopup(QWidget):
             f"""
             AlertPopup {{ background: {background}; }}
             #alertTitle {{
+                min-height: 32px;
                 color: {title};
-                font-size: 20px;
+                background: transparent;
+                border: none;
+                font-size: 22px;
                 font-weight: 800;
             }}
-            #alertDetail {{ color: {detail}; font-size: 14px; }}
             #alertImage {{
                 color: {image_text};
                 background: {image_background};
                 border: 1px solid {border};
                 border-radius: 8px;
             }}
-            #alertButton {{
-                min-height: 36px;
-                color: {button_text};
-                background: {button};
-                border: 0;
-                border-radius: 7px;
+            #mainAlertDetail, #mainAlertCountdown {{
+                color: #ffffff;
+                background: transparent;
+                border: none;
+                padding: 2px 9px;
                 font-weight: 700;
             }}
-            #alertButton:hover {{ background: {button_hover}; }}
+            #mainAlertDetail[overlaySize="small"],
+            #mainAlertCountdown[overlaySize="small"] {{
+                border-radius: 10px;
+            }}
+            #mainAlertDetail[overlaySize="medium"],
+            #mainAlertCountdown[overlaySize="medium"] {{
+                border-radius: 12px;
+            }}
+            #mainAlertDetail[overlaySize="large"],
+            #mainAlertCountdown[overlaySize="large"] {{
+                border-radius: 15px;
+            }}
+            #mainAlertExitButton {{
+                color: {button_text};
+                background: {button};
+                border: 1px solid rgba(255, 255, 255, 180);
+                border-radius: 7px;
+                font-weight: 800;
+            }}
+            #mainAlertExitButton:hover {{ background: {button_hover}; }}
             """
+        )
+        self._image.set_overlay_bubble_style(
+            QColor(15, 23, 42, 205),
+            QColor(255, 255, 255, 70),
         )
 
     def restore_saved_geometry(self) -> None:
@@ -402,16 +1043,17 @@ class AlertPopup(QWidget):
             )
         )
         self.restore_saved_geometry()
-        self._title.setText("移动或缩放这个报警小窗")
-        self._detail.setText("拖动标题栏调整位置，拖动窗口边缘调整大小。")
-        self._image_pixmap = None
-        self._image.setPixmap(QPixmap())
-        self._image.setText(
+        self._title.setText("弹窗位置")
+        self._image.set_alert_detail(
+            "拖动调整显示位置和大小。"
+        )
+        self._image.set_countdown_text("")
+        self._image.clear_image(
             "这里将显示实时预览"
             if self._display_mode in ALERT_LIVE_MODES
             else "这里将显示报警截图"
         )
-        self._button.setText("确定位置和大小")
+        self._image.configure_action("确定位置和大小", True)
         self.show()
         self.raise_()
         self.activateWindow()
@@ -424,46 +1066,31 @@ class AlertPopup(QWidget):
             )
         )
         self.restore_saved_geometry()
-        self._title.setText("⚠️ 警告 ⚠️")
+        self._title.setText("⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️")
         people_text = f"检测到 {max(people_count, 1)} 人进入监控区域"
-        self._detail.setText(
-            f"{people_text}\n{event_time}" if event_time else people_text
+        self._image.set_alert_detail(
+            people_text,
+            event_time,
         )
-        self._image_pixmap = None
-        self._image.setPixmap(QPixmap())
-        self._image.setText(
+        self._image.set_countdown_text("")
+        self._image.configure_action("退出告警", False)
+        self._image.clear_image(
             "正在获取实时预览…"
             if self._display_mode in ALERT_LIVE_MODES
             else "正在获取报警截图…"
         )
-        self._button.setText("我知道了")
         self.show()
         self.raise_()
         self.activateWindow()
 
     def set_event_image(self, image_data: bytes) -> None:
-        pixmap = QPixmap()
-        if not pixmap.loadFromData(image_data):
-            self._image.setText("报警截图不可用")
-            return
-        self._image_pixmap = pixmap
-        self._update_scaled_pixmap()
+        if not self._image.set_image_data(image_data):
+            self._image.clear_image("报警截图不可用")
 
-    def _update_scaled_pixmap(self) -> None:
-        if self._image_pixmap is None:
-            return
-        size = self._image.size()
-        self._image.setPixmap(
-            self._image_pixmap.scaled(
-                size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+    def set_countdown_text(self, text: str) -> None:
+        self._image.set_countdown_text(
+            "" if self._placement_mode else text
         )
-
-    def resizeEvent(self, event: Any) -> None:
-        super().resizeEvent(event)
-        self._update_scaled_pixmap()
 
     def _accept(self) -> None:
         if self._placement_mode:
@@ -542,11 +1169,10 @@ class AlertSettingsDialog(QDialog):
             QSizePolicy.Policy.Fixed,
         )
         for value, label in (
+            (2, "2 秒"),
             (5, "5 秒"),
             (10, "10 秒"),
             (15, "15 秒"),
-            (30, "30 秒"),
-            (60, "60 秒"),
             (0, "∞"),
         ):
             self.auto_exit_seconds.addItem(label, value)
@@ -560,7 +1186,9 @@ class AlertSettingsDialog(QDialog):
             saved_auto_exit
         )
         self.auto_exit_seconds.setCurrentIndex(
-            selected_auto_exit if selected_auto_exit >= 0 else 1
+            selected_auto_exit
+            if selected_auto_exit >= 0
+            else self.auto_exit_seconds.findData(10)
         )
         self.continuous_alert_display = QPushButton()
         self.continuous_alert_display.setObjectName("settingToggleButton")
@@ -803,20 +1431,19 @@ class OtherSettingsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("其他配置")
-        self.setMinimumWidth(420)
 
         title_label = QLabel("其他配置")
         title_label.setObjectName("dialogSectionTitle")
-        description_label = QLabel("该区域已预留，后续配置将在这里提供。")
-        description_label.setObjectName("dialogDescription")
 
         empty_card = QFrame()
         empty_card.setObjectName("dialogCard")
         empty_layout = QVBoxLayout(empty_card)
-        empty_layout.setContentsMargins(18, 28, 18, 28)
+        empty_layout.setContentsMargins(12, 10, 12, 10)
         empty_label = QLabel("暂无可配置项")
         empty_label.setObjectName("dialogDescription")
         empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        empty_label.setMinimumWidth(240)
+        empty_label.setMinimumHeight(28)
         empty_layout.addWidget(empty_label)
 
         close_button = QPushButton("关闭")
@@ -827,17 +1454,17 @@ class OtherSettingsDialog(QDialog):
         button_layout.addWidget(close_button)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 22, 22, 18)
-        layout.setSpacing(10)
+        layout.setContentsMargins(12, 14, 12, 12)
+        layout.setSpacing(6)
         layout.addWidget(title_label)
-        layout.addWidget(description_label)
         layout.addWidget(empty_card)
-        layout.addSpacing(8)
+        layout.addSpacing(6)
         layout.addLayout(button_layout)
+        self.adjustSize()
 
 
 class CloseActionDialog(QDialog):
-    """使用 Client 的控件风格呈现关闭窗口操作。"""
+    """使用服务端的控件风格呈现关闭窗口操作。"""
 
     def __init__(
         self,
@@ -1027,11 +1654,17 @@ class CloseActionDialog(QDialog):
 class ScaledPixmapLabel(QLabel):
     """保持宽高比显示预览画面的标签。"""
 
+    _PREFERRED_SIZE = QSize(320, 240)
+
     def __init__(self, placeholder: str) -> None:
         super().__init__(placeholder)
         self._source_pixmap: QPixmap | None = None
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumSize(320, 240)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
 
     def set_image_data(self, image_data: bytes) -> bool:
         pixmap = QPixmap()
@@ -1048,6 +1681,28 @@ class ScaledPixmapLabel(QLabel):
 
     def has_image(self) -> bool:
         return self._source_pixmap is not None
+
+    def displayed_pixmap_rect(self) -> QRect:
+        """返回保持比例缩放后，图像在标签中的实际显示区域。"""
+        if self._source_pixmap is None:
+            return self.rect()
+        scaled_size = self._source_pixmap.size().scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+        )
+        return QRect(
+            max((self.width() - scaled_size.width()) // 2, 0),
+            max((self.height() - scaled_size.height()) // 2, 0),
+            scaled_size.width(),
+            scaled_size.height(),
+        )
+
+    def sizeHint(self) -> QSize:
+        """避免缩放后的帧反向撑大布局并形成窗口放大循环。"""
+        return QSize(self._PREFERRED_SIZE)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
 
     def _update_scaled_pixmap(self) -> None:
         if self._source_pixmap is None:
@@ -1066,12 +1721,297 @@ class ScaledPixmapLabel(QLabel):
         self._update_scaled_pixmap()
 
 
+class AlertCanvas(ScaledPixmapLabel):
+    """以画面为主的告警区域，提示文字和退出按钮浮在画面上。"""
+
+    dismiss_requested = Signal()
+
+    def __init__(self) -> None:
+        super().__init__("正在获取告警画面…")
+        self.setMouseTracking(True)
+
+        self.detail_label = MarqueeLabel(
+            "检测到 1 人进入监控区域",
+            self,
+        )
+        self.detail_label.setObjectName("mainAlertDetail")
+        self.detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.detail_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self.countdown_label = MarqueeLabel("", self)
+        self.countdown_label.setObjectName("mainAlertCountdown")
+        self.countdown_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.countdown_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
+        )
+        self.countdown_label.hide()
+
+        self.exit_button = QPushButton("退出告警", self)
+        self.exit_button.setObjectName("mainAlertExitButton")
+        self.exit_button.setMinimumSize(0, 0)
+        self.exit_button.setVisible(False)
+        self.exit_button.clicked.connect(self.dismiss_requested.emit)
+        self._action_always_visible = False
+        self._overlay_font_size = 0
+        self._action_style_key: tuple[int, int] | None = None
+        self.set_overlay_bubble_style(
+            QColor(0, 0, 0, 150),
+            QColor(0, 0, 0, 0),
+        )
+
+    def set_overlay_bubble_style(
+        self,
+        background: QColor,
+        border: QColor,
+    ) -> None:
+        for label in (self.detail_label, self.countdown_label):
+            label.set_bubble_style(background, border)
+
+    def reset_hover_controls(self) -> None:
+        if not self._action_always_visible:
+            self.exit_button.hide()
+
+    def configure_action(
+        self,
+        text: str,
+        always_visible: bool = False,
+    ) -> None:
+        self._action_always_visible = always_visible
+        self.exit_button.setText(text)
+        self.exit_button.setVisible(always_visible)
+        self._position_overlays()
+
+    def set_alert_detail(self, text: str, tooltip: str = "") -> None:
+        self.detail_label.setText(text)
+        self.detail_label.setToolTip(tooltip)
+        self._position_overlays()
+
+    def set_countdown_text(self, text: str) -> None:
+        self.countdown_label.setText(text)
+        self.countdown_label.setVisible(bool(text))
+        self._position_overlays()
+
+    def set_image_data(self, image_data: bytes) -> bool:
+        loaded = super().set_image_data(image_data)
+        self._position_overlays()
+        return loaded
+
+    def clear_image(self, placeholder: str) -> None:
+        super().clear_image(placeholder)
+        self._position_overlays()
+
+    def mouseMoveEvent(self, event: Any) -> None:
+        point = event.position().toPoint()
+        content_rect = self.displayed_pixmap_rect()
+        center_area = content_rect.adjusted(
+            content_rect.width() // 4,
+            content_rect.height() // 4,
+            -(content_rect.width() // 4),
+            -(content_rect.height() // 4),
+        )
+        self.exit_button.setVisible(
+            self._action_always_visible
+            or center_area.contains(point)
+            or self.exit_button.underMouse()
+        )
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event: Any) -> None:
+        super().leaveEvent(event)
+        QTimer.singleShot(80, self._hide_exit_after_leave)
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._position_overlays()
+
+    def _position_overlays(self) -> None:
+        content_rect = self.displayed_pixmap_rect()
+        self._sync_overlay_font(content_rect)
+        available_width = max(content_rect.width() - 24, 0)
+        edge_margin = max(
+            min(content_rect.height() // 24, 16),
+            8,
+        )
+        detail_height = max(
+            self.detail_label.sizeHint().height(),
+            self._overlay_font_size + 12,
+        )
+        detail_width = min(
+            max(self.detail_label.natural_text_width(), 160),
+            available_width,
+        )
+        self.detail_label.setGeometry(
+            content_rect.x()
+            + max((content_rect.width() - detail_width) // 2, 0),
+            max(
+                content_rect.bottom()
+                - detail_height
+                - edge_margin
+                + 1,
+                content_rect.top(),
+            ),
+            detail_width,
+            detail_height,
+        )
+        self.detail_label.refresh_marquee()
+        countdown_height = max(
+            self.countdown_label.sizeHint().height(),
+            self._overlay_font_size + 12,
+        )
+        countdown_width = min(
+            max(self.countdown_label.natural_text_width(), 112),
+            available_width,
+        )
+        self.countdown_label.setGeometry(
+            content_rect.x()
+            + max(
+                (content_rect.width() - countdown_width) // 2,
+                0,
+            ),
+            content_rect.y() + edge_margin,
+            countdown_width,
+            countdown_height,
+        )
+        self.countdown_label.refresh_marquee()
+        self._position_action_button(content_rect, edge_margin)
+
+    def _position_action_button(
+        self,
+        content_rect: QRect,
+        edge_margin: int,
+    ) -> None:
+        available_width = max(
+            content_rect.width() - edge_margin * 2,
+            0,
+        )
+        available_height = max(
+            content_rect.height() - edge_margin * 2,
+            0,
+        )
+        target_size = max(
+            12,
+            min(
+                round(
+                    min(
+                        content_rect.width() / 24,
+                        content_rect.height() / 13,
+                    )
+                ),
+                26,
+            ),
+        )
+        font = self.exit_button.font()
+        while True:
+            font.setPixelSize(target_size)
+            font.setBold(True)
+            metrics = QFontMetrics(font)
+            natural_width = (
+                metrics.horizontalAdvance(self.exit_button.text())
+                + max(target_size + 24, 36)
+            )
+            if natural_width <= available_width or target_size <= 8:
+                break
+            target_size -= 1
+        self.exit_button.setFont(font)
+        button_height = min(
+            max(metrics.height() + 20, 36),
+            available_height,
+        )
+        button_width = min(natural_width, available_width)
+        radius = max(min(button_height // 4, 14), 6)
+        style_key = (target_size, radius)
+        if style_key != self._action_style_key:
+            self._action_style_key = style_key
+            self.exit_button.setStyleSheet(
+                "min-width: 0px;"
+                "min-height: 0px;"
+                f"font-size: {target_size}px;"
+                f"border-radius: {radius}px;"
+                "padding: 0 10px;"
+            )
+        desired_y = (
+            content_rect.top()
+            + round(content_rect.height() * 0.66)
+            - button_height // 2
+        )
+        minimum_y = content_rect.top() + edge_margin
+        maximum_y = max(
+            self.detail_label.geometry().top()
+            - button_height
+            - edge_margin,
+            minimum_y,
+        )
+        self.exit_button.setGeometry(
+            content_rect.x()
+            + max(
+                (content_rect.width() - button_width) // 2,
+                0,
+            ),
+            min(max(desired_y, minimum_y), maximum_y),
+            button_width,
+            button_height,
+        )
+
+    def _sync_overlay_font(self, content_rect: QRect) -> None:
+        target_size = max(
+            10,
+            min(
+                round(
+                    min(
+                        content_rect.width() / 32,
+                        content_rect.height() / 20,
+                    )
+                ),
+                20,
+            ),
+        )
+        if target_size == self._overlay_font_size:
+            return
+        self._overlay_font_size = target_size
+        overlay_size = (
+            "small"
+            if target_size <= 11
+            else "medium"
+            if target_size <= 15
+            else "large"
+        )
+        radius = max(
+            10,
+            min(round((target_size + 12) / 2), 15),
+        )
+        for label in (self.detail_label, self.countdown_label):
+            font = label.font()
+            font.setPixelSize(target_size)
+            font.setBold(True)
+            label.setFont(font)
+            label.setProperty("overlaySize", overlay_size)
+            label.setStyleSheet(
+                f"font-size: {target_size}px;"
+            )
+            label.set_bubble_radius(radius)
+            label.style().unpolish(label)
+            label.style().polish(label)
+            label.refresh_marquee()
+
+    def _hide_exit_after_leave(self) -> None:
+        if (
+            not self._action_always_visible
+            and not self.underMouse()
+            and not self.exit_button.underMouse()
+        ):
+            self.exit_button.hide()
+
+
 class NativeDashboard(QWidget):
-    """完全由 Desktop 绘制并直接消费 Client API 的监控面板。"""
+    """完全由 Desktop 绘制并直接消费服务端 API 的监控面板。"""
 
     alert_settings_requested = Signal()
     popup_settings_requested = Signal()
     other_settings_requested = Signal()
+    alert_dismiss_requested = Signal()
     alert_enabled_changed = Signal(bool)
     continuous_monitoring_changed = Signal(bool)
 
@@ -1082,6 +2022,8 @@ class NativeDashboard(QWidget):
         self._view_active = False
         self._preview_request_active = False
         self._preview_sequence = 0
+        self._controls_trigger_hovered = False
+        self._controls_panel_hovered = False
         self._network = QNetworkAccessManager(self)
         self._preview_timer = QTimer(self)
         self._preview_timer.setInterval(180)
@@ -1089,12 +2031,16 @@ class NativeDashboard(QWidget):
 
         self.setObjectName("nativeDashboard")
 
-        topbar = QFrame()
+        topbar = HoverFrame()
         topbar.setObjectName("dashboardCard")
+        topbar.hover_changed.connect(
+            self._on_controls_panel_hovered
+        )
+        self._controls_card = topbar
         top_layout = QGridLayout(topbar)
-        top_layout.setContentsMargins(16, 12, 16, 12)
-        top_layout.setHorizontalSpacing(10)
-        top_layout.setVerticalSpacing(10)
+        top_layout.setContentsMargins(10, 8, 10, 8)
+        top_layout.setHorizontalSpacing(6)
+        top_layout.setVerticalSpacing(4)
 
         self.alert_enabled_button = self._make_toggle_button("启用告警")
         self.continuous_button = self._make_toggle_button("连续监测")
@@ -1103,18 +2049,18 @@ class NativeDashboard(QWidget):
         self.popup_settings_button = QPushButton("弹窗位置")
         self.other_settings_button = QPushButton("其他配置")
 
-        controls = QWidget()
-        controls_layout = QHBoxLayout(controls)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(8)
-        controls_layout.addWidget(self.alert_enabled_button)
-        controls_layout.addWidget(self.continuous_button)
-        controls_layout.addWidget(self.preview_button)
-        controls_layout.addWidget(self.popup_settings_button)
-        controls_layout.addWidget(self.alert_settings_button)
-        controls_layout.addWidget(self.other_settings_button)
-        controls_layout.addStretch()
-        top_layout.addWidget(controls, 0, 0)
+        self._controls = HoverRevealControls(
+            [
+                self.alert_enabled_button,
+                self.continuous_button,
+                self.preview_button,
+                self.popup_settings_button,
+                self.alert_settings_button,
+                self.other_settings_button,
+            ]
+        )
+        self._controls_layout = self._controls.flow_layout
+        top_layout.addWidget(self._controls, 0, 0)
 
         monitor = QFrame()
         monitor.setObjectName("monitorCard")
@@ -1122,10 +2068,11 @@ class NativeDashboard(QWidget):
         monitor_layout.setContentsMargins(0, 0, 0, 0)
 
         self.monitor_stack = QStackedWidget()
-        idle_panel = QWidget()
-        idle_layout = QVBoxLayout(idle_panel)
-        idle_layout.setContentsMargins(20, 20, 20, 20)
-        idle_layout.addStretch()
+        self._idle_panel = QWidget()
+        self._idle_layout = QVBoxLayout(self._idle_panel)
+        self._idle_layout.setContentsMargins(20, 20, 20, 20)
+        self._idle_layout.setSpacing(4)
+        self._idle_layout.addStretch()
         self.status_icon = QLabel("⌁")
         self.status_icon.setObjectName("monitorIcon")
         self.status_icon.setFixedSize(76, 76)
@@ -1134,42 +2081,71 @@ class NativeDashboard(QWidget):
         self.status_title = QLabel("等待连接")
         self.status_title.setObjectName("monitorTitle")
         self.status_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.status_detail = QLabel("请先连接 AlertZone Client")
+        self.status_detail = QLabel("请先连接 AlertZone Server")
         self.status_detail.setObjectName("monitorDetail")
         self.status_detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_detail.setWordWrap(True)
-        source_label = QLabel("数据由 AlertZone Client API 提供")
-        source_label.setObjectName("dashboardSource")
-        source_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        idle_layout.addWidget(
+        self._source_label = QLabel("数据由 AlertZone Server API 提供")
+        self._source_label.setObjectName("dashboardSource")
+        self._source_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._idle_layout.addWidget(
             self.status_icon,
             0,
             Qt.AlignmentFlag.AlignHCenter,
         )
-        idle_layout.addWidget(self.status_title)
-        idle_layout.addWidget(self.status_detail)
-        idle_layout.addSpacing(6)
-        idle_layout.addWidget(source_label)
-        idle_layout.addStretch()
+        self._idle_layout.addWidget(self.status_title)
+        self._idle_layout.addWidget(self.status_detail)
+        self._idle_layout.addSpacing(2)
+        self._idle_layout.addWidget(self._source_label)
+        self._idle_layout.addStretch()
 
         self.preview_label = ScaledPixmapLabel("正在等待实时预览…")
         self.preview_label.setObjectName("previewLabel")
-        self.monitor_stack.addWidget(idle_panel)
+
+        self.alert_panel = QWidget()
+        self.alert_panel.setObjectName("mainAlertPanel")
+        self.alert_panel.setProperty("redAlert", False)
+        alert_layout = QVBoxLayout(self.alert_panel)
+        alert_layout.setContentsMargins(8, 8, 8, 8)
+        alert_layout.setSpacing(3)
+        self.alert_title = QLabel(
+            "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️"
+        )
+        self.alert_title.setObjectName("mainAlertTitle")
+        self.alert_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.alert_title.setMinimumWidth(0)
+        self.alert_title.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.alert_image = AlertCanvas()
+        self.alert_image.setObjectName("mainAlertImage")
+        self.alert_detail = self.alert_image.detail_label
+        self.alert_countdown = self.alert_image.countdown_label
+        self.alert_exit_button = self.alert_image.exit_button
+        self.alert_image.dismiss_requested.connect(
+            self.alert_dismiss_requested.emit
+        )
+        alert_layout.addWidget(self.alert_title)
+        alert_layout.addWidget(self.alert_image, 1)
+
+        self.monitor_stack.addWidget(self._idle_panel)
         self.monitor_stack.addWidget(self.preview_label)
+        self.monitor_stack.addWidget(self.alert_panel)
         monitor_layout.addWidget(self.monitor_stack)
 
         stats = QFrame()
         stats.setObjectName("dashboardCard")
         stats_layout = QGridLayout(stats)
-        stats_layout.setContentsMargins(18, 11, 18, 11)
-        stats_layout.setHorizontalSpacing(12)
+        stats_layout.setContentsMargins(14, 7, 14, 7)
+        stats_layout.setHorizontalSpacing(8)
         self.people_value = self._make_stat(stats_layout, 0, "人数", "0")
         self.presence_value = self._make_stat(stats_layout, 1, "持续", "—")
         self.fps_value = self._make_stat(stats_layout, 2, "FPS", "—")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 2, 10, 8)
+        layout.setSpacing(6)
         layout.addWidget(topbar)
         layout.addWidget(monitor, 1)
         layout.addWidget(stats)
@@ -1191,6 +2167,7 @@ class NativeDashboard(QWidget):
             self.other_settings_requested.emit
         )
         self.sync_controls()
+        self._status_density = ""
 
     @staticmethod
     def _make_toggle_button(text: str) -> QPushButton:
@@ -1264,11 +2241,159 @@ class NativeDashboard(QWidget):
         if self.preview_button.isChecked():
             self._request_preview()
 
+    def preferred_single_row_width(self) -> int:
+        margins = self.layout().contentsMargins()
+        return (
+            self._controls.minimum_full_width()
+            + margins.left()
+            + margins.right()
+            + 32
+        )
+
+    def set_controls_trigger_hovered(self, hovered: bool) -> None:
+        self._controls_trigger_hovered = hovered
+        if hovered:
+            self._sync_controls_card_visibility()
+        else:
+            QTimer.singleShot(
+                120,
+                self._sync_controls_card_visibility,
+            )
+
+    def _on_controls_panel_hovered(self, hovered: bool) -> None:
+        self._controls_panel_hovered = hovered
+        if hovered:
+            self._sync_controls_card_visibility()
+        else:
+            QTimer.singleShot(
+                120,
+                self._sync_controls_card_visibility,
+            )
+
+    def _sync_controls_card_visibility(self) -> None:
+        outer_margins = self.layout().contentsMargins()
+        card_margins = self._controls_card.layout().contentsMargins()
+        available_width = max(
+            self.width()
+            - outer_margins.left()
+            - outer_margins.right()
+            - card_margins.left()
+            - card_margins.right(),
+            0,
+        )
+        narrow = (
+            available_width < self._controls.minimum_full_width()
+        )
+        show_card = (
+            not narrow
+            or self._controls_trigger_hovered
+            or self._controls_panel_hovered
+        )
+        if self._controls_card.isHidden() == show_card:
+            self._controls_card.setVisible(show_card)
+            self.updateGeometry()
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        QTimer.singleShot(
+            0,
+            self._sync_controls_card_visibility,
+        )
+        QTimer.singleShot(0, self._sync_status_density)
+
+    def _sync_status_density(self) -> None:
+        """在低矮监测区域中同步缩放状态元素，避免图文相互覆盖。"""
+        monitor_height = self.monitor_stack.height()
+        if monitor_height < 165:
+            density = "tiny"
+            icon_size = 46
+            margins = (4, 3, 4, 3)
+        elif monitor_height < 250:
+            density = "compact"
+            icon_size = 58
+            margins = (8, 6, 8, 6)
+        else:
+            density = "normal"
+            icon_size = 76
+            margins = (20, 20, 20, 20)
+        if density == self._status_density:
+            return
+        self._status_density = density
+        self._idle_layout.setContentsMargins(*margins)
+        self.status_icon.setFixedSize(icon_size, icon_size)
+        for widget in (
+            self.status_icon,
+            self.status_title,
+            self.status_detail,
+            self._source_label,
+        ):
+            widget.setProperty("statusDensity", density)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+        self._idle_panel.updateGeometry()
+
+    def show_alert(
+        self,
+        people_count: int,
+        event_time: str = "",
+        mode: str = "zoom",
+    ) -> None:
+        """在主页面中显示与 Web 端一致的告警内容。"""
+        self.set_alert_display_mode(mode)
+        people_text = (
+            f"检测到 {max(people_count, 1)} 人进入监控区域"
+        )
+        self.alert_image.set_alert_detail(people_text, event_time)
+        self.alert_image.configure_action("退出告警", False)
+        self.alert_image.reset_hover_controls()
+        self.alert_image.clear_image(
+            "正在获取实时预览…"
+            if mode in ALERT_LIVE_MODES
+            else "正在获取报警截图…"
+        )
+        self.monitor_stack.setCurrentWidget(self.alert_panel)
+        self._update_preview_timer()
+
+    def hide_alert(self) -> None:
+        if not self.is_alert_active():
+            return
+        self.alert_image.reset_hover_controls()
+        self.alert_image.clear_image("正在获取告警画面…")
+        self._sync_monitor_page()
+        self._update_preview_timer()
+
+    def is_alert_active(self) -> bool:
+        return self.monitor_stack.currentWidget() is self.alert_panel
+
+    def set_alert_display_mode(self, mode: str) -> None:
+        mode = normalize_alert_display_mode(mode)
+        self.alert_panel.setProperty(
+            "redAlert",
+            mode in {"zoom-red", "live-red"},
+        )
+        self.alert_panel.setProperty("displayMode", mode)
+        self.alert_image.setVisible(mode in ALERT_IMAGE_MODES)
+        for widget in (
+            self.alert_panel,
+            self.alert_image,
+            self.alert_title,
+            self.alert_detail,
+            self.alert_exit_button,
+        ):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+    def set_alert_image(self, image_data: bytes) -> bool:
+        return self.alert_image.set_image_data(image_data)
+
+    def set_alert_countdown(self, text: str) -> None:
+        self.alert_image.set_countdown_text(text)
+
     def set_connection(self, online: bool, detail: str = "") -> None:
         if not online:
             self._set_monitor_state("idle", "⌁")
             self.status_title.setText("连接中断")
-            self.status_detail.setText(detail or "正在尝试重新连接 Client")
+            self.status_detail.setText(detail or "正在尝试重新连接服务端")
             if self.preview_button.isChecked():
                 self.preview_label.clear_image("连接中断，正在重试…")
 
@@ -1300,7 +2425,7 @@ class NativeDashboard(QWidget):
             self._set_monitor_state("idle", "⌁")
             self.status_title.setText("检测未启动")
             self.status_detail.setText(
-                str(payload.get("status") or "请在 Client 中开始检测")
+                str(payload.get("status") or "请在服务端中开始检测")
             )
 
     @staticmethod
@@ -1314,7 +2439,8 @@ class NativeDashboard(QWidget):
 
     def _on_preview_toggled(self, checked: bool) -> None:
         self._settings.setValue("dashboard/preview_enabled", checked)
-        self.monitor_stack.setCurrentIndex(1 if checked else 0)
+        if not self.is_alert_active():
+            self._sync_monitor_page()
         if not checked:
             self.preview_label.clear_image("实时预览已关闭")
         self._update_preview_timer()
@@ -1343,14 +2469,21 @@ class NativeDashboard(QWidget):
             self._view_active
             and bool(self._server_url)
             and self.preview_button.isChecked()
+            and not self.is_alert_active()
         )
-        self.monitor_stack.setCurrentIndex(
-            1 if self.preview_button.isChecked() else 0
-        )
+        if not self.is_alert_active():
+            self._sync_monitor_page()
         if should_run:
             self._preview_timer.start()
         else:
             self._preview_timer.stop()
+
+    def _sync_monitor_page(self) -> None:
+        self.monitor_stack.setCurrentWidget(
+            self.preview_label
+            if self.preview_button.isChecked()
+            else self.monitor_stack.widget(0)
+        )
 
     def _request_preview(self) -> None:
         if (
@@ -1387,7 +2520,7 @@ class NativeDashboard(QWidget):
                 QNetworkRequest.Attribute.HttpStatusCodeAttribute
             )
             if status_code == 503 and not self.preview_label.has_image():
-                self.preview_label.clear_image("等待 Client 生成预览画面…")
+                self.preview_label.clear_image("等待服务端生成预览画面…")
             elif not self.preview_label.has_image():
                 self.preview_label.clear_image(
                     f"实时预览暂不可用\n{reply.errorString()}"
@@ -1510,13 +2643,26 @@ class MainWindow(QMainWindow):
         self._alert_preview_reply: QNetworkReply | None = None
         self._alert_preview_sequence = 0
         self._latest_person_present = False
+        self._alert_active = False
+        self._current_alert_people = 1
+        self._current_alert_timestamp = ""
+        self._current_alert_image_available = False
+        self._current_alert_countdown = ""
         self._background_mode = False
-        # 每次启动默认跟随系统；主页按钮只在本次运行中切换浅色/深色。
-        self._theme_mode = "follow-system"
-        self._settings.remove("appearance/theme_mode")
+        saved_theme_mode = str(
+            self._settings.value(
+                "appearance/theme_mode",
+                "follow-system",
+            )
+        )
+        self._theme_mode = (
+            saved_theme_mode
+            if saved_theme_mode in THEME_MODES
+            else "follow-system"
+        )
         self._current_theme = ""
 
-        self.setWindowTitle(APP_NAME)
+        self.setWindowTitle(WINDOW_TITLE)
         icon_path = app_icon_path()
         self._icon = QIcon(str(icon_path)) if icon_path else QIcon()
         if not self._icon.isNull():
@@ -1532,6 +2678,11 @@ class MainWindow(QMainWindow):
         self._alert_exit_timer.setSingleShot(True)
         self._alert_exit_timer.timeout.connect(
             self._auto_exit_current_alert
+        )
+        self._alert_countdown_timer = QTimer(self)
+        self._alert_countdown_timer.setInterval(250)
+        self._alert_countdown_timer.timeout.connect(
+            self._update_alert_countdown
         )
         self._audio_output: Any | None = None
         self._player: Any | None = None
@@ -1562,6 +2713,9 @@ class MainWindow(QMainWindow):
         self._dashboard.other_settings_requested.connect(
             self.open_other_settings
         )
+        self._dashboard.alert_dismiss_requested.connect(
+            self._dismiss_current_alert
+        )
         self._dashboard.alert_enabled_changed.connect(
             self._on_alert_enabled_changed
         )
@@ -1569,7 +2723,7 @@ class MainWindow(QMainWindow):
             self._on_continuous_monitoring_changed
         )
 
-        self._stack = QStackedWidget()
+        self._stack = CurrentPageStack()
         self._stack.addWidget(self._connection_page)
         self._stack.addWidget(self._dashboard)
         self._build_topbar()
@@ -1602,34 +2756,52 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda: self.connect_to_server(saved_url))
 
     def _build_topbar(self) -> None:
-        """使用普通按钮构建单行顶栏，避开 macOS 原生 QToolButton 崩溃。"""
-        topbar = QFrame()
+        """使用可换行的普通按钮顶栏，避开窄窗口文字挤压。"""
+        topbar = HoverFrame()
         topbar.setObjectName("mainTopbar")
-        layout = QHBoxLayout(topbar)
-        layout.setContentsMargins(6, 4, 6, 4)
-        layout.setSpacing(4)
+        topbar.hover_changed.connect(
+            self._dashboard.set_controls_trigger_hovered
+        )
+        layout = FlowLayout(
+            topbar,
+            margins=(4, 0, 4, 0),
+            horizontal_spacing=3,
+            vertical_spacing=0,
+            justify_rows=True,
+            balanced_wrap=True,
+            split_index=2,
+            center_vertically=True,
+            wrap_at_split=True,
+        )
 
-        refresh_button = QPushButton("刷新状态")
-        refresh_button.setObjectName("topbarTextButton")
-        refresh_button.clicked.connect(self._refresh_dashboard)
-        layout.addWidget(refresh_button)
-
-        layout.addWidget(self._topbar_separator())
-        monitor_label = QLabel("Client连接状态：")
-        monitor_label.setObjectName("toolbarTitle")
-        layout.addWidget(monitor_label)
+        connection_group = QWidget()
+        connection_group.setObjectName("toolbarConnectionGroup")
+        connection_layout = QHBoxLayout(connection_group)
+        connection_layout.setContentsMargins(0, 0, 0, 0)
+        connection_layout.setSpacing(0)
+        self._monitor_label = QLabel("Server状态：")
+        self._monitor_label.setObjectName("toolbarTitle")
+        connection_layout.addWidget(self._monitor_label)
         self._address_label = QLabel("尚未连接")
         self._address_label.setObjectName("toolbarAddress")
         self._address_label.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Preferred,
         )
-        self._address_label.setMinimumWidth(92)
-        layout.addWidget(self._address_label)
+        self._address_label.setMinimumWidth(0)
+        connection_layout.addWidget(self._address_label)
+        layout.addWidget(connection_group)
 
-        layout.addStretch()
-        self._theme_button = QPushButton("深色主题")
+        refresh_button = QPushButton("刷新")
+        refresh_button.setObjectName("topbarTextButton")
+        refresh_button.clicked.connect(self._refresh_dashboard)
+        layout.addWidget(refresh_button)
+
+        self._theme_button = QPushButton(
+            THEME_LABELS[self._theme_mode]
+        )
         self._theme_button.setObjectName("topbarTextButton")
+        self._theme_button.setProperty("sectionStart", True)
         self._theme_button.clicked.connect(self._toggle_theme)
         layout.addWidget(self._theme_button)
         change_button = QPushButton("更换地址")
@@ -1644,16 +2816,9 @@ class MainWindow(QMainWindow):
         topbar.setVisible(False)
         self._topbar = topbar
 
-    @staticmethod
-    def _topbar_separator() -> QFrame:
-        separator = QFrame()
-        separator.setObjectName("topbarSeparator")
-        separator.setFrameShape(QFrame.Shape.VLine)
-        separator.setFrameShadow(QFrame.Shadow.Plain)
-        return separator
-
     def _build_tray(self) -> None:
         self._tray: QSystemTrayIcon | None = None
+        self._tray_alert_action: Any | None = None
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         tray = QSystemTrayIcon(self._icon, self)
@@ -1664,6 +2829,12 @@ class MainWindow(QMainWindow):
         self._tray_status_action = menu.addAction("尚未连接")
         self._tray_status_action.setEnabled(False)
         menu.addSeparator()
+        self._tray_alert_action = menu.addAction("启用告警")
+        self._tray_alert_action.setCheckable(True)
+        self._tray_alert_action.setChecked(self._alert_enabled())
+        self._tray_alert_action.toggled.connect(
+            self._on_tray_alert_toggled
+        )
         alert_settings_action = menu.addAction("告警设置")
         alert_settings_action.triggered.connect(self.open_alert_settings)
         other_settings_action = menu.addAction("其他配置")
@@ -1688,7 +2859,7 @@ class MainWindow(QMainWindow):
             self._probe_reply.deleteLater()
             self._probe_reply = None
         self._connection_page.address_edit.setText(server_url)
-        self._connection_page.set_connecting(True, "正在验证 AlertZone Client…")
+        self._connection_page.set_connecting(True, "正在验证 AlertZone Server…")
         request = QNetworkRequest(QUrl(f"{server_url}/api/status"))
         request.setTransferTimeout(REQUEST_TIMEOUT_MS)
         reply = self._network.get(request)
@@ -1704,7 +2875,7 @@ class MainWindow(QMainWindow):
                 raise ValueError(reply.errorString())
             payload = json.loads(bytes(reply.readAll()).decode("utf-8"))
             if not isinstance(payload, dict) or "instance_id" not in payload:
-                raise ValueError("该地址不是可识别的 AlertZone Client")
+                raise ValueError("该地址不是可识别的 AlertZone Server")
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError) as error:
             self._connection_page.set_connecting(False, f"连接失败：{error}")
             return
@@ -1720,7 +2891,7 @@ class MainWindow(QMainWindow):
         self._dashboard.set_connection(True, server_url)
         self._dashboard.update_status(payload)
         self._monitor.set_server_url(server_url)
-        if self._alert_popup_allowed():
+        if self._alert_enabled():
             QTimer.singleShot(0, self._monitor.request_rearm)
         self._address_label.setText("● 已连接")
         self._address_label.setToolTip(server_url)
@@ -1796,26 +2967,32 @@ class MainWindow(QMainWindow):
             )
         )
         self._sync_alert_exit_timer(restart=True)
-        if self._server_url and self._alert_popup_allowed():
+        if self._server_url and self._alert_enabled():
             self._monitor.request_rearm()
 
     def _on_alert_enabled_changed(self, enabled: bool) -> None:
+        if self._tray_alert_action is not None:
+            self._tray_alert_action.blockSignals(True)
+            self._tray_alert_action.setChecked(enabled)
+            self._tray_alert_action.blockSignals(False)
         if enabled:
-            if self._server_url and self._alert_popup_allowed():
+            if self._server_url:
                 self._monitor.request_rearm()
             return
-        self._alert_exit_timer.stop()
-        self._popup.hide()
-        self._stop_alert_live_preview()
-        self._stop_sound()
+        self._dismiss_current_alert(rearm=False)
+
+    def _on_tray_alert_toggled(self, enabled: bool) -> None:
+        """让托盘菜单与主页告警开关共用同一状态和处理流程。"""
+        if self._dashboard.alert_enabled_button.isChecked() != enabled:
+            self._dashboard.alert_enabled_button.setChecked(enabled)
 
     def _on_continuous_monitoring_changed(self, enabled: bool) -> None:
-        """连续监测开启后，让报警小窗从当前时刻开始重新布防。"""
+        """连续监测开启后，让告警界面从当前时刻开始重新布防。"""
         if (
             enabled
             and self._server_url
-            and self._alert_popup_allowed()
-            and not self._popup.is_alert_active()
+            and self._alert_enabled()
+            and not self._alert_active
         ):
             self._monitor.request_rearm()
 
@@ -1824,7 +3001,8 @@ class MainWindow(QMainWindow):
         self._settings.setValue("alert/display_mode", mode)
         self._settings.sync()
         self._popup.set_display_mode(mode)
-        if not self._popup.is_alert_active():
+        self._dashboard.set_alert_display_mode(mode)
+        if not self._alert_active:
             return
         if mode in ALERT_LIVE_MODES:
             self._start_alert_live_preview()
@@ -1850,7 +3028,7 @@ class MainWindow(QMainWindow):
         self._dashboard.request_preview_now()
 
     def _show_intrusion(self, data: dict) -> None:
-        if not self._alert_popup_allowed():
+        if not self._alert_enabled():
             return
         self._alert_exit_timer.stop()
         self._latest_person_present = bool(
@@ -1858,7 +3036,11 @@ class MainWindow(QMainWindow):
         )
         event_id = int(data.get("intrusion_event_id", 0))
         self._current_alert_event = event_id
+        self._current_alert_image_available = bool(
+            data.get("intrusion_image_available")
+        )
         count = int(data.get("intrusion_people_count") or data.get("people_count") or 1)
+        self._current_alert_people = max(count, 1)
         timestamp = ""
         event_time = data.get("intrusion_time")
         if isinstance(event_time, (float, int)):
@@ -1867,18 +3049,73 @@ class MainWindow(QMainWindow):
                 .astimezone()
                 .strftime("%Y-%m-%d %H:%M:%S")
             )
-        self._popup.show_alert(count, timestamp)
+        self._current_alert_timestamp = timestamp
+        self._current_alert_countdown = ""
+        self._alert_active = True
+        self._sync_alert_surface()
         self._play_configured_sound()
-        mode = self._popup.display_mode()
+        self._sync_alert_exit_timer(restart=True)
+
+    def _alert_enabled(self) -> bool:
+        return setting_bool(self._settings, "alert/enabled", False)
+
+    def _main_alert_allowed(self) -> bool:
+        return (
+            self._alert_enabled()
+            and not self._background_mode
+            and self.isVisible()
+            and not self.isMinimized()
+            and self._stack.currentWidget() is self._dashboard
+        )
+
+    def _alert_surface_is_visible(self) -> bool:
+        return (
+            self._popup.is_alert_active()
+            or self._dashboard.is_alert_active()
+        )
+
+    def _sync_alert_surface(self) -> None:
+        """根据前台、最小化和后台状态选择主页面或报警小窗。"""
+        if not self._alert_active or not self._alert_enabled():
+            self._popup.hide()
+            self._dashboard.hide_alert()
+            return
+        mode = normalize_alert_display_mode(
+            self._settings.value("alert/display_mode", "zoom")
+        )
+        surface_changed = False
+        if self._alert_popup_allowed():
+            self._dashboard.hide_alert()
+            if not self._popup.is_alert_active():
+                self._popup.show_alert(
+                    self._current_alert_people,
+                    self._current_alert_timestamp,
+                )
+                self._popup.set_countdown_text(
+                    self._current_alert_countdown
+                )
+                surface_changed = True
+        elif self._main_alert_allowed():
+            self._popup.hide()
+            if not self._dashboard.is_alert_active():
+                self._dashboard.show_alert(
+                    self._current_alert_people,
+                    self._current_alert_timestamp,
+                    mode,
+                )
+                self._dashboard.set_alert_countdown(
+                    self._current_alert_countdown
+                )
+                surface_changed = True
+        else:
+            self._popup.hide()
+            self._dashboard.hide_alert()
+        if not surface_changed:
+            return
         if mode in ALERT_LIVE_MODES:
             self._start_alert_live_preview()
-        elif (
-            mode in {"zoom", "zoom-red"}
-            and data.get("intrusion_image_available")
-        ):
-            self._request_intrusion_image(event_id)
-
-        self._sync_alert_exit_timer(restart=True)
+        elif self._current_alert_image_available:
+            self._request_intrusion_image(self._current_alert_event)
 
     def _request_intrusion_image(self, event_id: int) -> None:
         if event_id <= 0 or not self._server_url:
@@ -1897,14 +3134,22 @@ class MainWindow(QMainWindow):
             if (
                 reply.error() == QNetworkReply.NetworkError.NoError
                 and event_id == self._current_alert_event
-                and self._popup.isVisible()
+                and self._alert_active
             ):
-                self._popup.set_event_image(bytes(reply.readAll()))
+                image_data = bytes(reply.readAll())
+                if self._popup.is_alert_active():
+                    self._popup.set_event_image(image_data)
+                if self._dashboard.is_alert_active():
+                    self._dashboard.set_alert_image(image_data)
         finally:
             reply.deleteLater()
 
     def _start_alert_live_preview(self) -> None:
-        if not self._server_url or not self._popup.is_alert_active():
+        if (
+            not self._server_url
+            or not self._alert_active
+            or not self._alert_surface_is_visible()
+        ):
             return
         self._alert_preview_timer.start()
         self._request_alert_live_preview()
@@ -1919,8 +3164,12 @@ class MainWindow(QMainWindow):
     def _request_alert_live_preview(self) -> None:
         if (
             not self._server_url
-            or not self._popup.is_alert_active()
-            or self._popup.display_mode() not in ALERT_LIVE_MODES
+            or not self._alert_active
+            or not self._alert_surface_is_visible()
+            or normalize_alert_display_mode(
+                self._settings.value("alert/display_mode", "zoom")
+            )
+            not in ALERT_LIVE_MODES
         ):
             self._stop_alert_live_preview()
             return
@@ -1948,10 +3197,18 @@ class MainWindow(QMainWindow):
         try:
             if (
                 reply.error() == QNetworkReply.NetworkError.NoError
-                and self._popup.is_alert_active()
-                and self._popup.display_mode() in ALERT_LIVE_MODES
+                and self._alert_active
+                and self._alert_surface_is_visible()
+                and normalize_alert_display_mode(
+                    self._settings.value("alert/display_mode", "zoom")
+                )
+                in ALERT_LIVE_MODES
             ):
-                self._popup.set_event_image(bytes(reply.readAll()))
+                image_data = bytes(reply.readAll())
+                if self._popup.is_alert_active():
+                    self._popup.set_event_image(image_data)
+                if self._dashboard.is_alert_active():
+                    self._dashboard.set_alert_image(image_data)
         finally:
             reply.deleteLater()
 
@@ -1964,8 +3221,10 @@ class MainWindow(QMainWindow):
         )
 
     def _sync_alert_exit_timer(self, restart: bool = False) -> None:
-        if not self._popup.is_alert_active():
+        if not self._alert_active:
             self._alert_exit_timer.stop()
+            self._alert_countdown_timer.stop()
+            self._set_alert_countdown("")
             return
         continuous_display = setting_bool(
             self._settings,
@@ -1974,26 +3233,70 @@ class MainWindow(QMainWindow):
         )
         if continuous_display and self._latest_person_present:
             self._alert_exit_timer.stop()
+            self._alert_countdown_timer.stop()
+            self._set_alert_countdown("等待人员离开")
             return
         if self._alert_exit_timer.isActive() and not restart:
+            self._update_alert_countdown()
             return
         self._alert_exit_timer.stop()
+        self._alert_countdown_timer.stop()
         auto_exit = self._alert_auto_exit_seconds()
         if auto_exit > 0:
             self._alert_exit_timer.start(auto_exit * 1000)
+            self._set_alert_countdown(
+                f"{auto_exit} 秒后退出告警"
+            )
+            self._alert_countdown_timer.start()
+        else:
+            self._set_alert_countdown("手动退出")
+
+    def _update_alert_countdown(self) -> None:
+        if not self._alert_active:
+            self._alert_countdown_timer.stop()
+            self._set_alert_countdown("")
+            return
+        remaining_ms = self._alert_exit_timer.remainingTime()
+        if remaining_ms < 0:
+            return
+        remaining_seconds = max(
+            math.ceil(remaining_ms / 1000),
+            0,
+        )
+        self._set_alert_countdown(
+            f"{remaining_seconds} 秒后退出告警"
+        )
+
+    def _set_alert_countdown(self, text: str) -> None:
+        self._current_alert_countdown = text
+        self._dashboard.set_alert_countdown(text)
+        self._popup.set_countdown_text(text)
 
     def _auto_exit_current_alert(self) -> None:
-        if self._popup.is_alert_active():
-            self._popup.hide()
-            self._on_popup_dismissed()
+        if self._alert_active:
+            self._dismiss_current_alert()
 
     def _on_popup_dismissed(self) -> None:
+        self._dismiss_current_alert()
+
+    def _dismiss_current_alert(self, rearm: bool = True) -> None:
+        self._alert_active = False
         self._alert_exit_timer.stop()
+        self._alert_countdown_timer.stop()
+        self._set_alert_countdown("")
+        self._popup.hide()
+        self._dashboard.hide_alert()
         self._stop_alert_live_preview()
         self._stop_sound()
         if (
-            setting_bool(self._settings, "alert/continuous", False)
-            and self._alert_popup_allowed()
+            rearm
+            and self._server_url
+            and setting_bool(
+                self._settings,
+                "alert/continuous",
+                False,
+            )
+            and self._alert_enabled()
         ):
             self._monitor.request_rearm()
 
@@ -2060,32 +3363,50 @@ class MainWindow(QMainWindow):
             )
 
     def _resize_to_button_fit_default(self) -> None:
-        """按两排按钮完整显示所需的最紧凑布局设置启动尺寸。"""
+        """按四字按钮完整显示的紧凑宽度设置启动尺寸。"""
         self._topbar.ensurePolished()
         self._dashboard.ensurePolished()
         dashboard_hint = self._dashboard.minimumSizeHint()
         topbar_hint = self._topbar.sizeHint()
-        width = max(
-            self._topbar.layout().minimumSize().width(),
-            dashboard_hint.width(),
-        )
+        width = self._dashboard.preferred_single_row_width()
         self.resize(
             width,
-            dashboard_hint.height() + topbar_hint.height() + 100,
+            max(
+                dashboard_hint.height() + topbar_hint.height() + 100,
+                520,
+            ),
         )
 
-    def _set_explicit_theme(self, theme: str) -> None:
-        self._theme_mode = "dark" if theme == "dark" else "light"
-        self._apply_theme(self._theme_mode)
+    def minimumSizeHint(self) -> QSize:
+        """不锁定主窗口尺寸，由流式布局负责在窄窗口中换行。"""
+        return QSize(0, 0)
+
+    def _set_theme_mode(self, mode: str) -> None:
+        self._theme_mode = (
+            mode if mode in THEME_MODES else "follow-system"
+        )
+        self._settings.setValue(
+            "appearance/theme_mode",
+            self._theme_mode,
+        )
+        self._settings.sync()
+        self._update_theme_button()
+        self._apply_theme(self._resolved_theme())
 
     def _toggle_theme(self) -> None:
-        self._set_explicit_theme(
-            "light" if self._current_theme == "dark" else "dark"
+        current_index = THEME_MODES.index(self._theme_mode)
+        self._set_theme_mode(
+            THEME_MODES[(current_index + 1) % len(THEME_MODES)]
         )
 
     def _on_system_theme_changed(self, _scheme: Any) -> None:
         if self._theme_mode == "follow-system":
             self._apply_theme(self._resolved_theme())
+
+    def _update_theme_button(self) -> None:
+        self._theme_button.setText(
+            THEME_LABELS.get(self._theme_mode, "跟随系统")
+        )
 
     def hide_to_tray(self) -> None:
         if self._tray is None:
@@ -2112,26 +3433,22 @@ class MainWindow(QMainWindow):
         self.showNormal()
         if self._stack.currentWidget() is self._dashboard:
             self._dashboard.set_view_active(True)
+        self._sync_alert_surface()
+        if self._alert_active:
+            self._start_alert_live_preview()
         self.raise_()
         self.activateWindow()
 
     def _alert_popup_allowed(self) -> bool:
-        return setting_bool(
-            self._settings,
-            "alert/enabled",
-            False,
-        ) and (self._background_mode or self.isMinimized())
+        return self._alert_enabled() and (
+            self._background_mode or self.isMinimized()
+        )
 
     def _set_background_mode(self, enabled: bool) -> None:
         self._background_mode = enabled
-        if enabled:
-            if self._server_url and self._alert_popup_allowed():
-                self._monitor.request_rearm()
-        else:
-            self._alert_exit_timer.stop()
-            self._popup.hide()
-            self._stop_alert_live_preview()
-            self._stop_sound()
+        if enabled and self._server_url and self._alert_popup_allowed():
+            self._monitor.request_rearm()
+        self._sync_alert_surface()
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
@@ -2139,16 +3456,16 @@ class MainWindow(QMainWindow):
             return
         if self.isMinimized():
             self._dashboard.set_view_active(False)
+            self._sync_alert_surface()
             if self._server_url and self._alert_popup_allowed():
                 self._monitor.request_rearm()
             return
         if not self._background_mode:
-            self._alert_exit_timer.stop()
-            self._popup.hide()
-            self._stop_alert_live_preview()
-            self._stop_sound()
             if self._stack.currentWidget() is self._dashboard:
                 self._dashboard.set_view_active(self.isVisible())
+            self._sync_alert_surface()
+            if self._alert_active:
+                self._start_alert_live_preview()
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
@@ -2161,6 +3478,7 @@ class MainWindow(QMainWindow):
         self._quitting = True
         self._settings.sync()
         self._alert_exit_timer.stop()
+        self._alert_countdown_timer.stop()
         self._stop_alert_live_preview()
         self._stop_sound()
         if self._tray is not None:
@@ -2200,6 +3518,7 @@ class MainWindow(QMainWindow):
     def _apply_theme(self, theme: str) -> None:
         """统一应用到主窗口、连接页、设置页、工具栏和报警小窗。"""
         theme = "dark" if theme == "dark" else "light"
+        self._update_theme_button()
         if theme == self._current_theme:
             return
         self._current_theme = theme
@@ -2313,10 +3632,24 @@ class MainWindow(QMainWindow):
                 background: rgba(255, 212, 42, 26);
                 border: 2px solid #d39f00;
             }}
+            #monitorIcon[statusDensity="compact"] {{
+                border-radius: 29px;
+                font-size: 27px;
+            }}
+            #monitorIcon[statusDensity="tiny"] {{
+                border-radius: 23px;
+                font-size: 22px;
+            }}
             #monitorTitle {{
                 color: {colors["text"]};
                 font-size: 29px;
                 font-weight: 800;
+            }}
+            #monitorTitle[statusDensity="compact"] {{
+                font-size: 23px;
+            }}
+            #monitorTitle[statusDensity="tiny"] {{
+                font-size: 19px;
             }}
             #monitorTitle[state="person"] {{
                 color: {colors["warning"]};
@@ -2330,12 +3663,83 @@ class MainWindow(QMainWindow):
             #monitorDetail {{
                 font-size: 15px;
             }}
+            #monitorDetail[statusDensity="compact"] {{
+                font-size: 13px;
+            }}
+            #monitorDetail[statusDensity="tiny"],
+            #dashboardSource[statusDensity="tiny"] {{
+                font-size: 11px;
+            }}
             #previewLabel {{
                 color: {colors["muted"]};
                 background: {colors["page"]};
                 border: none;
                 border-radius: 0;
                 font-size: 16px;
+            }}
+            #mainAlertPanel {{
+                color: white;
+                background: #05080c;
+                border: none;
+            }}
+            #mainAlertPanel[redAlert="true"] {{
+                background: #e00018;
+            }}
+            #mainAlertImage {{
+                color: #f6c8cd;
+                background: #0b0d10;
+                border: 3px solid #ff4152;
+                border-radius: 9px;
+                font-size: 15px;
+            }}
+            #mainAlertPanel[redAlert="true"] #mainAlertImage {{
+                color: white;
+                border-color: white;
+            }}
+            #mainAlertTitle {{
+                color: white;
+                min-height: 32px;
+                padding: 0;
+                background: transparent;
+                border: none;
+                font-size: 22px;
+                font-weight: 800;
+            }}
+            #mainAlertDetail {{
+                color: white;
+                padding: 0 10px;
+                background: transparent;
+                border: none;
+                font-weight: 700;
+            }}
+            #mainAlertCountdown {{
+                color: white;
+                padding: 0 9px;
+                background: transparent;
+                border: none;
+                font-weight: 700;
+            }}
+            #mainAlertDetail[overlaySize="small"],
+            #mainAlertCountdown[overlaySize="small"] {{
+                border-radius: 10px;
+            }}
+            #mainAlertDetail[overlaySize="medium"],
+            #mainAlertCountdown[overlaySize="medium"] {{
+                border-radius: 12px;
+            }}
+            #mainAlertDetail[overlaySize="large"],
+            #mainAlertCountdown[overlaySize="large"] {{
+                border-radius: 15px;
+            }}
+            #mainAlertExitButton {{
+                color: white;
+                background: #20242b;
+                border: 1px solid rgba(255, 255, 255, 210);
+                border-radius: 8px;
+                font-weight: 800;
+            }}
+            #mainAlertExitButton:hover {{
+                background: rgba(190, 20, 32, 235);
             }}
             #statValue {{
                 color: {colors["text"]};
@@ -2351,6 +3755,10 @@ class MainWindow(QMainWindow):
             #toggleButton:checked:hover {{
                 background: #15803d;
                 border-color: #0b652f;
+            }}
+            #dashboardControls QPushButton {{
+                padding: 0 4px;
+                font-size: 13px;
             }}
             #settingToggleButton {{
                 min-height: 28px;
@@ -2370,15 +3778,15 @@ class MainWindow(QMainWindow):
                 border-color: #0b652f;
             }}
             #mainTopbar {{
-                min-height: 38px;
+                min-height: 28px;
                 color: {colors["text"]};
                 background: {colors["surface"]};
                 border: none;
                 border-bottom: 1px solid {colors["border"]};
             }}
             #mainTopbar QPushButton {{
-                min-height: 28px;
-                padding: 0 9px;
+                min-height: 22px;
+                padding: 0 4px;
                 color: {colors["text"]};
                 background: {colors["surface_alt"]};
                 border: 1px solid {colors["border"]};
@@ -2395,12 +3803,10 @@ class MainWindow(QMainWindow):
             #mainTopbar QPushButton#topbarTextButton:hover {{
                 background: {colors["surface_alt"]};
             }}
-            #topbarSeparator {{
-                color: {colors["border"]};
-                background: {colors["border"]};
-                border: none;
-                min-width: 1px;
-                max-width: 1px;
+            #mainTopbar QPushButton[sectionStart="true"] {{
+                padding-left: 9px;
+                border-left: 1px solid {colors["muted"]};
+                border-radius: 0;
             }}
             QLabel {{
                 color: {colors["text"]};
@@ -2545,12 +3951,14 @@ class MainWindow(QMainWindow):
             }}
             #toolbarAddress {{
                 color: {colors["danger"]};
-                padding: 0 7px 0 2px;
+                min-height: 22px;
+                padding: 0 7px 0 0;
                 font-weight: 700;
             }}
             #toolbarTitle {{
                 color: {colors["text"]};
-                padding: 0 2px 0 7px;
+                min-height: 22px;
+                padding: 0;
                 font-size: 14px;
                 font-weight: 800;
             }}
@@ -2561,9 +3969,8 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is not None:
             app.setStyleSheet(style)
-        self._theme_button.setText(
-            "浅色主题" if theme == "dark" else "深色主题"
-        )
+        self._dashboard._controls.sync_text_fit_widths()
+        self._dashboard._sync_controls_card_visibility()
         self._popup.apply_theme(theme)
 
 

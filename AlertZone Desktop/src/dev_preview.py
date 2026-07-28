@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
-APP_FILE = PROJECT_DIR / "alertzone_desktop.py"
+APP_FILE = PROJECT_DIR / "AlertZone_Desktop.py"
 CHECK_INTERVAL = 0.5
 
 

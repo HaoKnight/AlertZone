@@ -1,4 +1,4 @@
-# 🚨 AlertZone Client
+# 🚨 AlertZone Server
 
 <div align="center">
     <img src="./icon/icon.png" width="128" height="128" alt="AlertZone 图标" />
@@ -6,14 +6,16 @@
 
 <div align="center">
     <p style="font-size: 30px; font-weight: 700; margin: 10px 0 0;">
-        AlertZone Client
+        AlertZone Server
     </p>
     <p>本地人体检测 · 区域监控 · 局域网告警</p>
 </div>
 
 ## 🔍 概述
 
-AlertZone Client 是一个基于摄像头的本地人体检测与告警工具。它使用 YOLO 检测画面中的 `person` 类别，通过 ByteTrack 维持视频流中的临时跟踪编号，并提供 PySide6 桌面界面与局域网告警页面。
+AlertZone Server 是基于摄像头的本地人体检测与告警服务端。它使用 YOLO 检测
+画面中的 `person` 类别，通过 ByteTrack 维持视频流中的临时跟踪编号，并通过
+PySide6 服务端桌面界面提供局域网告警页面和 HTTP API。
 
 该项目主要用于：
 
@@ -26,7 +28,7 @@ AlertZone Client 是一个基于摄像头的本地人体检测与告警工具。
 
 ## ✨ 功能
 
-### 桌面端
+### 服务端桌面界面
 
 - 自动扫描并按设备名称切换可用摄像头
 - 自动探测并只列出摄像头实际可请求、可取帧的分辨率
@@ -36,7 +38,7 @@ AlertZone Client 是一个基于摄像头的本地人体检测与告警工具。
 - 可设置软件启动并完成摄像头扫描后自动开始监测
 - 关闭主窗口时可选择后台静默运行、退出应用程序或取消
 - 自动保存摄像头、分辨率、镜像、主题、局域网开关和端口、识别区域及窗口尺寸
-- 在桌面客户端显示当前在线的局域网访问设备数量
+- 在服务端桌面应用中显示当前在线的局域网客户端设备数量
 
 ### 局域网页面
 
@@ -170,12 +172,12 @@ python start.py
 
 ### 项目文件
 
-- `src/AlertZone_Client.py`：桌面界面、人体检测、跟踪和局域网服务
+- `src/AlertZone_Server.py`：桌面界面、人体检测、跟踪和局域网服务
 - `start.py`：项目根目录启动入口
 - `src/web/index.html`：局域网状态与告警页面
 - `src/yolo11n.pt`：YOLO 人体检测模型
 - `src/dev_preview.py`：开发阶段的界面自动重启脚本
-- `icon/`：Windows、macOS 和运行时图标
+- `icon/`：Server 红色主题的 Windows、macOS 和运行时图标
 - `requirements.txt`：Python 运行依赖
 
 ### 源码调试
@@ -215,14 +217,14 @@ AlertZone/
 │   ├── icon.ico
 │   └── icon.icns
 └── src/
-    ├── AlertZone_Client.py
+    ├── AlertZone_Server.py
     ├── dev_preview.py
     ├── yolo11n.pt
     └── web/
         └── index.html
 ```
 
-PyInstaller 会把 `--add-data` 指定的资源放进应用包。程序必须相对于 `__file__` 查找这些资源，而不能依赖启动时的工作目录。打包前请确认 `src/AlertZone_Client.py` 使用以下方式定位模型：
+PyInstaller 会把 `--add-data` 指定的资源放进应用包。程序必须相对于 `__file__` 查找这些资源，而不能依赖启动时的工作目录。打包前请确认 `src/AlertZone_Server.py` 使用以下方式定位模型：
 
 ```python
 APP_ROOT = Path(__file__).resolve().parent
@@ -267,7 +269,7 @@ python -m pip install --upgrade pyinstaller pyinstaller-hooks-contrib
 
 ```powershell
 python -c "import cv2, torch, ultralytics, PySide6; print('Dependencies OK')"
-python src\AlertZone_Client.py
+python src\AlertZone_Server.py
 ```
 
 #### 2. 构建文件夹版（推荐）
@@ -280,34 +282,34 @@ python -m PyInstaller `
   --clean `
   --windowed `
   --onedir `
-  --name "AlertZone Client" `
+  --name "AlertZone Server" `
   --icon "icon\icon.ico" `
   --add-data "icon\icon.png:icon" `
   --add-data "src\yolo11n.pt:." `
   --add-data "src\web:web" `
   --collect-all ultralytics `
   --copy-metadata ultralytics `
-  src\AlertZone_Client.py
+  src\AlertZone_Server.py
 ```
 
 生成结果：
 
 ```text
-dist\AlertZone Client\AlertZone Client.exe
+dist\AlertZone Server\AlertZone Server.exe
 ```
 
 先从 PowerShell 启动一次，便于观察错误：
 
 ```powershell
-& ".\dist\AlertZone Client\AlertZone Client.exe"
+& ".\dist\AlertZone Server\AlertZone Server.exe"
 ```
 
-再通过资源管理器双击测试。发布文件夹版时必须发送整个 `dist\AlertZone Client` 文件夹，不能只复制其中的 `AlertZone Client.exe`。
+再通过资源管理器双击测试。发布文件夹版时必须发送整个 `dist\AlertZone Server` 文件夹，不能只复制其中的 `AlertZone Server.exe`。
 
 可以使用 PowerShell 压缩发布目录：
 
 ```powershell
-Compress-Archive -Path ".\dist\AlertZone Client" -DestinationPath ".\AlertZone-Client-Windows-x64.zip" -Force
+Compress-Archive -Path ".\dist\AlertZone Server" -DestinationPath ".\AlertZone-Server-Windows-x64.zip" -Force
 Get-FileHash .\AlertZone-Windows-x64.zip -Algorithm SHA256
 ```
 
@@ -321,20 +323,20 @@ python -m PyInstaller `
   --clean `
   --windowed `
   --onefile `
-  --name "AlertZone Client" `
+  --name "AlertZone Server" `
   --icon "icon\icon.ico" `
   --add-data "icon\icon.png:icon" `
   --add-data "src\yolo11n.pt:." `
   --add-data "src\web:web" `
   --collect-all ultralytics `
   --copy-metadata ultralytics `
-  src\AlertZone_Client.py
+  src\AlertZone_Server.py
 ```
 
 生成结果：
 
 ```text
-dist\AlertZone Client.exe
+dist\AlertZone Server.exe
 ```
 
 单文件版包含 PySide6、PyTorch、Ultralytics 和模型，体积较大；每次启动还需要先释放运行文件，因此通常比文件夹版慢。未签名的程序也可能触发 SmartScreen 或杀毒软件提示。正式公开分发时，建议使用可信的 Authenticode 代码签名证书签署最终 `.exe`。
@@ -386,7 +388,7 @@ python -m PyInstaller \
   --clean \
   --windowed \
   --onedir \
-  --name "AlertZone Client" \
+  --name "AlertZone Server" \
   --icon "icon/icon.icns" \
   --osx-bundle-identifier "com.hknight.alertzone" \
   --add-data "icon/icon.png:icon" \
@@ -394,13 +396,13 @@ python -m PyInstaller \
   --add-data "src/web:web" \
   --collect-all ultralytics \
   --copy-metadata ultralytics \
-  src/AlertZone_Client.py
+  src/AlertZone_Server.py
 ```
 
 生成结果：
 
 ```text
-dist/AlertZone Client.app
+dist/AlertZone Server.app
 ```
 
 #### 4. 写入 macOS 隐私权限说明
@@ -410,19 +412,19 @@ dist/AlertZone Client.app
 ```bash
 /usr/libexec/PlistBuddy \
   -c "Add :NSCameraUsageDescription string AlertZone 需要访问摄像头以进行本地人体检测与区域告警。" \
-  "dist/AlertZone Client.app/Contents/Info.plist"
+  "dist/AlertZone Server.app/Contents/Info.plist"
 
 /usr/libexec/PlistBuddy \
   -c "Add :NSLocalNetworkUsageDescription string AlertZone 需要访问本地网络，以便局域网设备查看检测状态与告警页面。" \
-  "dist/AlertZone Client.app/Contents/Info.plist"
+  "dist/AlertZone Server.app/Contents/Info.plist"
 ```
 
 修改 `Info.plist` 后原签名会失效。本机测试时重新进行临时签名：
 
 ```bash
-codesign --force --deep --sign - "dist/AlertZone Client.app"
-codesign --verify --deep --strict --verbose=2 "dist/AlertZone Client.app"
-open "dist/AlertZone Client.app"
+codesign --force --deep --sign - "dist/AlertZone Server.app"
+codesign --verify --deep --strict --verbose=2 "dist/AlertZone Server.app"
+open "dist/AlertZone Server.app"
 ```
 
 如果重复执行时提示键已经存在，请将对应命令中的 `Add` 改为 `Set`。

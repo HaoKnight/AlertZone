@@ -1,6 +1,6 @@
 """AlertZone Desktop 启动入口。"""
 
-from src.alertzone_desktop import main
+from src.AlertZone_Desktop import main
 
 if __name__ == "__main__":
     raise SystemExit(main())

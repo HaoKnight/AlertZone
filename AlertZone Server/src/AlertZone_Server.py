@@ -1,4 +1,4 @@
-"""AlertZone Client 摄像头人体检测与跟踪界面。
+"""AlertZone Server 摄像头人体检测与跟踪界面。
 
 程序使用 YOLO + ByteTrack 框选并跟踪人体。
 程序不进行人脸检测、身份识别或人员身份比对。
@@ -74,7 +74,7 @@ PERSON_CLASS_ID = 0
 ALERT_CONFIRM_SECONDS = 1.0
 ALERT_CONFIRM_OPTIONS_SECONDS = (0.0, 0.2, 0.5, 1.0, 2.0)
 OPERATION_STATUS_DURATION_MS = 1000
-APP_NAME = "AlertZone Client"
+APP_NAME = "AlertZone Server"
 
 # 程序图标和局域网网页都相对于脚本目录定位，源码与打包环境均可读取。
 APP_ROOT = Path(__file__).resolve().parent
@@ -116,7 +116,7 @@ CAMERA_RESOLUTION_CANDIDATES = (
 )
 DEFAULT_CAMERA_RESOLUTION = (1280, 720)
 
-# 使用系统原生位置保存桌面客户端设置，升级项目代码时不会丢失。
+# 使用系统原生位置保存服务端桌面应用设置，升级项目代码时不会丢失。
 SETTINGS_ORGANIZATION = "CameraMonitor"
 SETTINGS_APPLICATION = "CameraApp"
 
@@ -2344,7 +2344,7 @@ class CameraWindow(QMainWindow):
         self._force_quit = False
         self._tray_icon: QSystemTrayIcon | None = None
         self._tray_menu: QMenu | None = None
-        self.setWindowTitle(f"{APP_NAME} · 人员进入检测与报警 · ©H-Knight")
+        self.setWindowTitle(f"{APP_NAME} · ©H-Knight")
 
         self.camera_combo = AlignedComboBox()
         # 摄像头和分辨率选择框随窗口宽度共同伸缩。
@@ -2509,7 +2509,7 @@ class CameraWindow(QMainWindow):
         self.setMinimumSize(460, 400)
         # 初次显示采用最小尺寸，宽度和高度之后都可以自由调整。
         self.resize(self.minimumSize())
-        lan_enabled = self.restore_client_settings()
+        lan_enabled = self.restore_server_settings()
         self._startup_auto_detection_pending = (
             self.auto_detection_checkbox.isChecked()
         )
@@ -2903,7 +2903,7 @@ class CameraWindow(QMainWindow):
             return False
         return default
 
-    def restore_client_settings(self) -> bool:
+    def restore_server_settings(self) -> bool:
         """恢复上次关闭时的桌面配置，并返回局域网开关状态。"""
         camera_index = self.settings.value("camera_index")
         try:
@@ -3019,7 +3019,7 @@ class CameraWindow(QMainWindow):
             True,
         )
 
-    def save_client_settings(self) -> None:
+    def save_server_settings(self) -> None:
         """保存下次启动需要恢复的桌面配置，但不保存检测运行状态。"""
         camera_index = self.camera_combo.currentData()
         if camera_index is not None:
@@ -3225,7 +3225,7 @@ class CameraWindow(QMainWindow):
             self.start_lan_server()
 
     def update_online_lan_devices(self) -> None:
-        """定时在桌面客户端显示仍在线的网页设备数量。"""
+        """定时在服务端桌面应用中显示仍在线的客户端设备数量。"""
         count = (
             self.lan_state.online_client_count()
             if self.lan_switch.isChecked()
@@ -3952,7 +3952,7 @@ class CameraWindow(QMainWindow):
             self._force_quit = True
 
         # 停止线程前保存界面选项；运行/停止状态本身不会被记忆。
-        self.save_client_settings()
+        self.save_server_settings()
 
         # 关闭窗口前先停止两个后台线程，避免出现 QThread 销毁警告。
         scan_worker = self.scan_worker

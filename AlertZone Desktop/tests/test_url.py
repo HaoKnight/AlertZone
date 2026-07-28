@@ -2,7 +2,7 @@
 
 import unittest
 
-from src.alertzone_desktop import normalize_server_url
+from src.AlertZone_Desktop import normalize_server_url
 
 
 class NormalizeServerUrlTests(unittest.TestCase):

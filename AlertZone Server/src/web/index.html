@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>AlertZone Client · 局域网人员进入监测</title>
+  <title>AlertZone Server · 局域网人员进入监测</title>
   <style>
     :root {
       --page: #eef1f4;
@@ -657,11 +657,10 @@
               <select id="alertTimeoutSeconds"
                 aria-label="自动恢复延迟时间"
                 title="警告自动退出并继续检测的延迟时间；∞ 表示仅手动退出">
+                <option value="2">2s</option>
                 <option value="5">5s</option>
                 <option value="10" selected>10s</option>
                 <option value="15">15s</option>
-                <option value="30">30s</option>
-                <option value="60">60s</option>
                 <option value="0">∞</option>
               </select>
             </label>
@@ -682,8 +681,8 @@
       <img id="livePreviewImage" class="live-preview hidden" alt="实时检测画面">
       <div id="monitorContent" class="monitor-content">
         <div id="monitorIcon" class="monitor-icon">⌁</div>
-        <h2 id="monitorTitle">等待客户端检测启动</h2>
-        <p id="monitorDetail">请在客户端上启动“开始检测”。
+        <h2 id="monitorTitle">等待服务端检测启动</h2>
+        <p id="monitorDetail">请在服务端上启动“开始检测”。
 网页不会开启占用本机摄像头。</p>
       </div>
     </section>
@@ -695,7 +694,7 @@
     </section>
 
     <p class="privacy-note">
-      作者：H-Knight  - 网页不会打开本地摄像头，实时预览由客户端检测线程按需提供。
+      作者：H-Knight  - 网页不会打开本地摄像头，实时预览由服务端检测线程按需提供。
     </p>
   </main>
 
@@ -721,7 +720,7 @@
     const DEFAULT_ALERT_CONFIRM_SECONDS = 0.2;
     const ALERT_CONFIRM_OPTIONS_SECONDS = [0, 0.2, 0.5, 1, 2];
     const DEFAULT_ALERT_TIMEOUT_SECONDS = 10;
-    const ALERT_TIMEOUT_OPTIONS_SECONDS = [0, 5, 10, 15, 30, 60];
+    const ALERT_TIMEOUT_OPTIONS_SECONDS = [0, 2, 5, 10, 15];
     const PREVIEW_RECONNECT_DELAY_MS = 700;
     const PREVIEW_READY_CHECK_MS = 100;
     const PREVIEW_HEARTBEAT_INTERVAL_MS = 500;
@@ -1246,9 +1245,9 @@
       monitor.classList.remove("detecting", "person");
       if (!data.detection_running) {
         monitorIcon.textContent = "⌁";
-        monitorTitle.textContent = "等待客户端检测启动";
+        monitorTitle.textContent = "等待服务端检测启动";
         monitorDetail.textContent =
-          "请在客户端上点击“开始检测”。\n网页不会开启占用本机摄像头。";
+          "请在服务端上点击“开始检测”。\n网页不会开启占用本机摄像头。";
         return;
       }
 

@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from PySide6.QtCore import QCoreApplication, QSettings, QTimer
 
-from src.alertzone_desktop import StatusMonitor
+from src.AlertZone_Desktop import StatusMonitor
 
 
 class _StatusHandler(BaseHTTPRequestHandler):
