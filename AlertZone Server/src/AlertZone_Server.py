@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 import cv2
 import torch
 from PySide6.QtCore import (
+    QEvent,
     QPoint,
     QRect,
     QSettings,
@@ -73,6 +74,7 @@ TRACKER_NAME = "bytetrack.yaml"
 PERSON_CLASS_ID = 0
 ALERT_CONFIRM_SECONDS = 1.0
 ALERT_CONFIRM_OPTIONS_SECONDS = (0.0, 0.2, 0.5, 1.0, 2.0)
+BACKGROUND_FPS_LIMIT = 10.0
 OPERATION_STATUS_DURATION_MS = 1000
 APP_NAME = "AlertZone Server"
 
@@ -1151,6 +1153,8 @@ class CameraWorker(QThread):
         self.frame_height = frame_height
         self.lan_state = lan_state
         self._running = True
+        self._background_fps_limit_enabled = False
+        self._runtime_state_lock = threading.RLock()
         self._detection_region_lock = threading.RLock()
         self._detection_region_enabled = detection_region_enabled
         self._detection_region = normalize_detection_region(detection_region)
@@ -1159,6 +1163,18 @@ class CameraWorker(QThread):
     def stop(self) -> None:
         """通知循环安全退出，摄像头会在 finally 中释放。"""
         self._running = False
+
+    def set_background_fps_limit(self, enabled: bool) -> None:
+        """线程安全地启用或关闭后台 10 FPS 限制。"""
+        with self._runtime_state_lock:
+            self._background_fps_limit_enabled = enabled
+
+    def background_frame_interval(self) -> float:
+        """返回后台目标帧间隔；前台运行时不主动限速。"""
+        with self._runtime_state_lock:
+            if not self._background_fps_limit_enabled:
+                return 0.0
+        return 1.0 / BACKGROUND_FPS_LIMIT
 
     def set_mirror(self, enabled: bool) -> None:
         """检测运行期间线程安全切换镜像，并重新开始人物持续计时。"""
@@ -1273,6 +1289,7 @@ class CameraWorker(QThread):
             pending_frame: Any = initial_frame
 
             while self._running:
+                frame_started_at = time.perf_counter()
                 if pending_frame is not None:
                     frame = pending_frame
                     pending_frame = None
@@ -1425,6 +1442,15 @@ class CameraWorker(QThread):
 
                 self.frame_ready.emit(image)
                 self.stats_changed.emit(people_count, displayed_fps)
+
+                # 后台限帧仅补足每轮剩余时间；推理本身较慢时不会额外等待。
+                frame_interval = self.background_frame_interval()
+                remaining_time = (
+                    frame_interval
+                    - (time.perf_counter() - frame_started_at)
+                )
+                if remaining_time > 0:
+                    time.sleep(remaining_time)
 
         except Exception as exc:
             if self._running:
@@ -2460,6 +2486,18 @@ class CameraWindow(QMainWindow):
         self.auto_detection_checkbox.setToolTip(
             "软件启动并完成摄像头扫描后自动开始人体监测"
         )
+        self.background_fps_checkbox = PlatformCheckBox(
+            "后台限制 10 FPS"
+        )
+        self.background_fps_checkbox.setObjectName(
+            "backgroundFpsCheckbox"
+        )
+        self.background_fps_checkbox.setToolTip(
+            "启用后，窗口最小化或静默隐藏运行时将检测速度限制为 10 FPS"
+        )
+        self.background_fps_checkbox.toggled.connect(
+            self.update_background_fps_limit
+        )
         self.rotation_button = QPushButton("画面旋转↻")
         self.rotation_button.setObjectName("rotationButton")
         self.rotation_button.setFixedWidth(90)
@@ -2588,6 +2626,7 @@ class CameraWindow(QMainWindow):
         metrics_layout.addWidget(self.mirror_checkbox)
         metrics_layout.addWidget(self.lan_switch)
         metrics_layout.addWidget(self.auto_detection_checkbox)
+        metrics_layout.addWidget(self.background_fps_checkbox)
         metrics_layout.addStretch(1)
         metrics_layout.addWidget(self.lan_devices_label)
         metrics_layout.addWidget(self.people_label)
@@ -2656,6 +2695,12 @@ class CameraWindow(QMainWindow):
         # Windows 会在窗口显示后最终确定字体，再测量一次避免数像素误差。
         self._sync_selector_widths()
         self._update_status_bar_layout()
+        self.update_background_fps_limit()
+
+    def changeEvent(self, event: Any) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            QTimer.singleShot(0, self.update_background_fps_limit)
 
     def _apply_styles(self) -> None:
         """根据 dark_mode 生成并应用整套 Qt 样式表。"""
@@ -2693,7 +2738,12 @@ class CameraWindow(QMainWindow):
             }
 
         # Windows 自定义复选框使用最清晰的黑白主题边框。
-        for checkbox in (self.mirror_checkbox, self.lan_switch):
+        for checkbox in (
+            self.mirror_checkbox,
+            self.lan_switch,
+            self.auto_detection_checkbox,
+            self.background_fps_checkbox,
+        ):
             checkbox.setProperty("darkTheme", self.dark_mode)
             checkbox.update()
 
@@ -2992,6 +3042,13 @@ class CameraWindow(QMainWindow):
             False,
         )
         self.auto_detection_checkbox.setChecked(auto_detection_enabled)
+        background_fps_limit_enabled = self._setting_as_bool(
+            self.settings.value("background_fps_limit_enabled"),
+            False,
+        )
+        self.background_fps_checkbox.setChecked(
+            background_fps_limit_enabled
+        )
 
         raw_window_size = self.settings.value("window_size", "")
         if raw_window_size:
@@ -3048,6 +3105,10 @@ class CameraWindow(QMainWindow):
         self.settings.setValue(
             "auto_detection_on_startup",
             self.auto_detection_checkbox.isChecked(),
+        )
+        self.settings.setValue(
+            "background_fps_limit_enabled",
+            self.background_fps_checkbox.isChecked(),
         )
         self.settings.setValue(
             "detection_region_enabled",
@@ -3125,6 +3186,7 @@ class CameraWindow(QMainWindow):
             self.show()
         self.raise_()
         self.activateWindow()
+        self.update_background_fps_limit()
 
     def _minimize_to_background(self) -> None:
         """隐藏到系统托盘；无托盘环境则退化为普通最小化。"""
@@ -3140,6 +3202,20 @@ class CameraWindow(QMainWindow):
                 )
         else:
             self.showMinimized()
+        self.update_background_fps_limit()
+
+    def update_background_fps_limit(
+        self,
+        _enabled: bool | None = None,
+    ) -> None:
+        """只在窗口最小化或静默隐藏时向检测线程应用 10 FPS 限制。"""
+        worker = self.worker
+        if worker is None or not worker.isRunning():
+            return
+        is_background = self.isMinimized() or not self.isVisible()
+        worker.set_background_fps_limit(
+            self.background_fps_checkbox.isChecked() and is_background
+        )
 
     def _request_application_exit(self) -> None:
         """由关闭提示或托盘菜单发起真正退出。"""
@@ -3718,6 +3794,10 @@ class CameraWindow(QMainWindow):
             detection_region=self.detection_region,
             lan_state=self.lan_state,
             parent=self,
+        )
+        worker.set_background_fps_limit(
+            self.background_fps_checkbox.isChecked()
+            and (self.isMinimized() or not self.isVisible())
         )
         # lambda 捕获 worker，用于识别信号是否来自当前活动线程。
         # 这样点击停止后，消息队列中残留的旧帧不会重新显示。
