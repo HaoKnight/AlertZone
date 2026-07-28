@@ -146,6 +146,19 @@ python -m pip install -r requirements-build.txt
 python build.py
 ```
 
+在 Windows 中直接运行该命令时，会显示打包格式选择：
+
+```text
+1. 单文件格式
+2. 文件夹格式（推荐）
+```
+
+也可以跳过交互菜单，直接指定文件夹格式：
+
+```bash
+python build.py --onedir
+```
+
 默认使用无控制台窗口的 GUI 模式，并自动完成以下配置：
 
 - 使用 `start.py` 作为程序入口

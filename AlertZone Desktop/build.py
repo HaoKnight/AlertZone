@@ -66,10 +66,20 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="打包 AlertZone Desktop 可执行程序",
     )
-    parser.add_argument(
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--onefile",
-        action="store_true",
+        dest="package_mode",
+        action="store_const",
+        const="onefile",
         help="生成单文件版本；默认生成启动更快的目录版本",
+    )
+    mode_group.add_argument(
+        "--onedir",
+        dest="package_mode",
+        action="store_const",
+        const="onedir",
+        help="生成包含运行组件的文件夹版本",
     )
     parser.add_argument(
         "--console",
@@ -77,6 +87,25 @@ def parse_args() -> argparse.Namespace:
         help="保留控制台窗口，便于排查打包后的启动问题",
     )
     return parser.parse_args()
+
+
+def select_onefile(package_mode: str | None) -> bool:
+    if package_mode is not None:
+        return package_mode == "onefile"
+    if platform.system() != "Windows" or not sys.stdin.isatty():
+        return False
+    print(
+        "\n请选择 Windows 打包格式：\n"
+        "  1. 单文件格式（便于传输，首次启动较慢）\n"
+        "  2. 文件夹格式（推荐，启动更快）"
+    )
+    while True:
+        selection = input("请输入 1 或 2，直接回车默认选择 2：").strip()
+        if selection in {"", "2"}:
+            return False
+        if selection == "1":
+            return True
+        print("输入无效，请输入 1 或 2。")
 
 
 def main() -> int:
@@ -102,7 +131,10 @@ def main() -> int:
         return 2
     (ROOT_DIR / "build").mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        build_arguments(args.onefile, args.console),
+        build_arguments(
+            select_onefile(args.package_mode),
+            args.console,
+        ),
         cwd=ROOT_DIR,
         check=True,
     )
