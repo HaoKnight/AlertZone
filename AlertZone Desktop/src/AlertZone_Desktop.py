@@ -77,7 +77,7 @@ except ImportError:
     QMediaPlayer = None
 
 APP_NAME = "AlertZone Desktop"
-WINDOW_TITLE = f"{APP_NAME} · ©H-Knight"
+WINDOW_TITLE = f"{APP_NAME} · 服务端 · ©H-Knight"
 ORGANIZATION_NAME = "AlertZone"
 DEFAULT_PORT = 8765
 POLL_INTERVAL_MS = 600

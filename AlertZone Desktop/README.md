@@ -126,6 +126,71 @@ Desktop 只依赖 PySide6，不需要安装 PyTorch、Ultralytics 或 OpenCV。
 python start.py
 ```
 
+## 🏗️ 打包发布
+
+Desktop 使用 PyInstaller 生成独立应用。PyInstaller 不支持跨平台打包：
+Windows 安装包必须在 Windows 上构建，macOS 应用必须在 macOS 上构建。
+
+### 1. 安装打包依赖
+
+进入 `AlertZone Desktop` 目录并激活虚拟环境，然后运行：
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements-build.txt
+```
+
+### 2. 构建目录版本
+
+```bash
+python build.py
+```
+
+默认使用无控制台窗口的 GUI 模式，并自动完成以下配置：
+
+- 使用 `start.py` 作为程序入口
+- 收集 PySide6 和 Qt Multimedia 运行组件
+- 将 `icon/` 资源加入应用
+- Windows 使用 `icon.ico`
+- macOS 使用 `icon.icns`
+- 清理上一次 PyInstaller 构建缓存
+
+构建产物位于：
+
+- **Windows**：`dist/AlertZone Desktop/AlertZone Desktop.exe`
+- **macOS**：`dist/AlertZone Desktop.app`
+- **Linux**：`dist/AlertZone Desktop/AlertZone Desktop`
+
+目录版本启动更快，推荐用于正常发布。发布时需要复制整个产物目录；macOS
+只需复制完整的 `.app`。
+
+### 3. 构建单文件版本
+
+```bash
+python build.py --onefile
+```
+
+单文件版本便于传输，但首次启动需要释放 Qt 组件，速度通常比目录版本慢。
+
+### 4. 打包故障排查
+
+如果打包后的程序无法启动，可临时保留控制台查看错误：
+
+```bash
+python build.py --console
+```
+
+建议打包前先验证源码和测试：
+
+```bash
+python start.py
+python -m unittest discover -s tests -v
+```
+
+macOS 构建结果默认没有开发者签名和公证；对外分发时需要使用 Apple Developer
+证书完成签名、公证和 stapling。Windows 未签名程序也可能触发 SmartScreen，
+正式分发时建议使用代码签名证书。
+
 ## 🚀 使用说明
 
 ### 连接 AlertZone Server
@@ -205,8 +270,10 @@ Desktop 首次启动时默认跟随 Windows 或 macOS 的系统外观。主页�
 - `src/AlertZone_Desktop.py`：原生仪表板、接口轮询、实时预览、报警弹窗和主题
 - `src/dev_preview.py`：开发阶段保存代码后自动重启界面的预览脚本
 - `start.py`：项目根目录启动入口
+- `build.py`：Windows、macOS 和 Linux 的 PyInstaller 打包入口
 - `icon/`：Desktop 蓝色主题的 Windows、macOS 和运行时图标
 - `requirements.txt`：Desktop 运行依赖
+- `requirements-build.txt`：运行依赖和 PyInstaller 打包依赖
 - `tests/test_url.py`：局域网地址规范化测试
 - `tests/test_monitor.py`：后台报警事件轮询测试
 - `tests/test_00_dashboard.py`：原生状态仪表板和预览接口测试
