@@ -1,0 +1,3 @@
+-r requirements.txt
+lapx>=0.5.11
+PyInstaller>=6.10,<7

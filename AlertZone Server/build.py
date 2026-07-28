@@ -1,0 +1,192 @@
+"""使用 PyInstaller 打包 AlertZone Server。"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import os
+import platform
+import plistlib
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+APP_NAME = "AlertZone Server"
+ROOT_DIR = Path(__file__).resolve().parent
+SOURCE_DIR = ROOT_DIR / "src"
+ENTRY_FILE = SOURCE_DIR / "AlertZone_Server.py"
+MODEL_FILE = SOURCE_DIR / "yolo11n.pt"
+WEB_DIR = SOURCE_DIR / "web"
+ICON_DIR = ROOT_DIR / "icon"
+
+
+def platform_icon() -> Path:
+    system = platform.system()
+    if system == "Darwin":
+        return ICON_DIR / "icon.icns"
+    if system == "Windows":
+        return ICON_DIR / "icon.ico"
+    return ICON_DIR / "icon.png"
+
+
+def build_arguments(onefile: bool, console: bool) -> list[str]:
+    arguments = [
+        sys.executable,
+        "-m",
+        "PyInstaller",
+        "--noconfirm",
+        "--clean",
+        "--name",
+        APP_NAME,
+        "--icon",
+        str(platform_icon()),
+        "--add-data",
+        f"{ICON_DIR}{os.pathsep}icon",
+        "--add-data",
+        f"{MODEL_FILE}{os.pathsep}.",
+        "--add-data",
+        f"{WEB_DIR}{os.pathsep}web",
+        "--collect-all",
+        "ultralytics",
+        "--copy-metadata",
+        "ultralytics",
+        "--hidden-import",
+        "lap",
+        "--distpath",
+        str(ROOT_DIR / "dist"),
+        "--workpath",
+        str(ROOT_DIR / "build" / "pyinstaller"),
+        "--specpath",
+        str(ROOT_DIR / "build"),
+    ]
+    arguments.append("--console" if console else "--windowed")
+    arguments.append("--onefile" if onefile else "--onedir")
+    if platform.system() == "Darwin":
+        arguments.extend(
+            [
+                "--osx-bundle-identifier",
+                "com.hknight.alertzone.server",
+            ]
+        )
+    arguments.append(str(ENTRY_FILE))
+    return arguments
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="打包 AlertZone Server 可执行程序",
+    )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--onefile",
+        dest="package_mode",
+        action="store_const",
+        const="onefile",
+        help="生成单文件版本；体积较大且首次启动较慢",
+    )
+    mode_group.add_argument(
+        "--onedir",
+        dest="package_mode",
+        action="store_const",
+        const="onedir",
+        help="生成包含运行组件的文件夹版本",
+    )
+    parser.add_argument(
+        "--console",
+        action="store_true",
+        help="保留控制台窗口，便于排查打包后的启动问题",
+    )
+    return parser.parse_args()
+
+
+def select_onefile(package_mode: str | None) -> bool:
+    if package_mode is not None:
+        return package_mode == "onefile"
+    if platform.system() != "Windows" or not sys.stdin.isatty():
+        return False
+    print(
+        "\n请选择 Windows 打包格式：\n"
+        "  1. 单文件格式（便于传输，首次启动较慢）\n"
+        "  2. 文件夹格式（推荐，启动更快）"
+    )
+    while True:
+        selection = input("请输入 1 或 2，直接回车默认选择 2：").strip()
+        if selection in {"", "2"}:
+            return False
+        if selection == "1":
+            return True
+        print("输入无效，请输入 1 或 2。")
+
+
+def configure_macos_bundle() -> None:
+    app_bundle = ROOT_DIR / "dist" / f"{APP_NAME}.app"
+    plist_path = app_bundle / "Contents" / "Info.plist"
+    if not plist_path.is_file():
+        return
+    with plist_path.open("rb") as plist_file:
+        info = plistlib.load(plist_file)
+    info["NSCameraUsageDescription"] = (
+        "AlertZone 需要访问摄像头以进行本地人体检测与区域告警。"
+    )
+    info["NSLocalNetworkUsageDescription"] = (
+        "AlertZone 需要访问本地网络，以便局域网设备查看检测状态与告警页面。"
+    )
+    with plist_path.open("wb") as plist_file:
+        plistlib.dump(info, plist_file)
+    codesign = shutil.which("codesign")
+    if codesign is not None:
+        subprocess.run(
+            [
+                codesign,
+                "--force",
+                "--deep",
+                "--sign",
+                "-",
+                str(app_bundle),
+            ],
+            check=True,
+        )
+
+
+def main() -> int:
+    args = parse_args()
+    if importlib.util.find_spec("PyInstaller") is None:
+        print(
+            "未安装 PyInstaller，请先运行：\n"
+            "python -m pip install -r requirements-build.txt",
+            file=sys.stderr,
+        )
+        return 2
+    required_paths = (
+        ENTRY_FILE,
+        MODEL_FILE,
+        WEB_DIR / "index.html",
+        ICON_DIR,
+        platform_icon(),
+    )
+    missing = [path for path in required_paths if not path.exists()]
+    if missing:
+        print(
+            "缺少打包资源："
+            + "、".join(str(path) for path in missing),
+            file=sys.stderr,
+        )
+        return 2
+    (ROOT_DIR / "build").mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        build_arguments(
+            select_onefile(args.package_mode),
+            args.console,
+        ),
+        cwd=ROOT_DIR,
+        check=True,
+    )
+    if platform.system() == "Darwin" and not args.console:
+        configure_macos_bundle()
+    print(f"打包完成：{ROOT_DIR / 'dist'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

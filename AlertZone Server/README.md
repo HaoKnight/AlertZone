@@ -177,8 +177,10 @@ python start.py
 - `src/web/index.html`：局域网状态与告警页面
 - `src/yolo11n.pt`：YOLO 人体检测模型
 - `src/dev_preview.py`：开发阶段的界面自动重启脚本
+- `build.py`：Windows、macOS 和 Linux 的 PyInstaller 自动打包入口
 - `icon/`：Server 红色主题的 Windows、macOS 和运行时图标
 - `requirements.txt`：Python 运行依赖
+- `requirements-build.txt`：运行依赖、跟踪器和 PyInstaller 打包依赖
 
 ### 源码调试
 
@@ -204,6 +206,64 @@ python src/dev_preview.py
 ### 打包说明
 
 AlertZone 使用 PyInstaller 打包。PyInstaller 不是跨平台编译器：Windows 版必须在 Windows 中构建，macOS 版必须在 macOS 中构建。建议使用 64 位 Python 3.11，并先验证文件夹版，再尝试单文件版。
+
+#### 自动打包（推荐）
+
+进入 `AlertZone Server` 目录并激活打包虚拟环境，然后安装依赖：
+
+```bash
+python -m pip install --upgrade pip
+python -m pip install -r requirements-build.txt
+```
+
+构建文件夹版本：
+
+```bash
+python build.py --onedir
+```
+
+构建单文件版本：
+
+```bash
+python build.py --onefile
+```
+
+在 Windows 中直接运行 `python build.py` 时还会显示选择菜单：
+
+```text
+1. 单文件格式
+2. 文件夹格式（推荐）
+```
+
+自动打包脚本会包含以下必要资源和依赖：
+
+- `src/yolo11n.pt` 检测模型
+- `src/web/` 局域网页面
+- `icon/` 平台图标
+- Ultralytics 数据文件和包元数据
+- ByteTrack 使用的 `lapx`
+- 当前环境中的 PyTorch、OpenCV 和 PySide6
+
+生成位置：
+
+- **Windows 文件夹版**：`dist/AlertZone Server/AlertZone Server.exe`
+- **Windows 单文件版**：`dist/AlertZone Server.exe`
+- **macOS**：`dist/AlertZone Server.app`
+- **Linux 文件夹版**：`dist/AlertZone Server/AlertZone Server`
+
+macOS 自动打包还会写入摄像头和局域网权限说明，并在系统提供 `codesign` 时执行
+临时签名。正式分发仍需要 Apple Developer ID 签名和公证。
+
+如果打包后的程序无法启动，可保留控制台重新构建：
+
+```bash
+python build.py --onedir --console
+```
+
+> Windows GPU 版会继承打包环境中的 PyTorch 类型。需要 CUDA 时，必须先确认
+> `torch.cuda.is_available()` 为 `True`，再在同一个虚拟环境运行 `build.py`。
+
+下面保留手工 PyInstaller 命令，供需要调整高级参数时参考。
 
 #### 打包前检查
 
