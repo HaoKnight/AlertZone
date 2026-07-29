@@ -710,6 +710,40 @@ class NativeDashboardTests(unittest.TestCase):
             )
             self.assertFalse(window._alert_active)
 
+    def test_sound_only_alert_hides_all_visual_surfaces(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            settings.setValue("alert/enabled", True)
+            settings.setValue("alert/display_mode", "sound-only")
+
+            class HiddenSurface:
+                hidden = False
+
+                def hide(self) -> None:
+                    self.hidden = True
+
+                def hide_alert(self) -> None:
+                    self.hidden = True
+
+            class FakeWindow:
+                _settings = settings
+                _alert_active = True
+                _popup = HiddenSurface()
+                _dashboard = HiddenSurface()
+                _alert_enabled = MainWindow._alert_enabled
+                preview_stopped = False
+
+                def _stop_alert_live_preview(self) -> None:
+                    self.preview_stopped = True
+
+            window = FakeWindow()
+            MainWindow._sync_alert_surface(window)
+            self.assertTrue(window._popup.hidden)
+            self.assertTrue(window._dashboard.hidden)
+            self.assertTrue(window.preview_stopped)
+
     def test_alert_frames_do_not_expand_the_window_size_hint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = QSettings(
@@ -739,13 +773,19 @@ class NativeDashboardTests(unittest.TestCase):
             )
             dialog = AlertSettingsDialog(settings)
             self.assertEqual(dialog.windowTitle(), "告警设置")
-            self.assertEqual(dialog.alert_display_mode.count(), 4)
+            self.assertEqual(dialog.alert_display_mode.count(), 5)
             self.assertEqual(
                 [
                     dialog.alert_display_mode.itemData(index)
                     for index in range(dialog.alert_display_mode.count())
                 ],
-                ["zoom", "live", "zoom-red", "live-red"],
+                [
+                    "zoom",
+                    "live",
+                    "zoom-red",
+                    "live-red",
+                    "sound-only",
+                ],
             )
             self.assertEqual(
                 dialog.alert_display_mode.itemText(0),
@@ -756,6 +796,12 @@ class NativeDashboardTests(unittest.TestCase):
                     dialog.alert_display_mode.findData("live-red")
                 ),
                 "全屏红色且实时预览",
+            )
+            self.assertEqual(
+                dialog.alert_display_mode.itemText(
+                    dialog.alert_display_mode.findData("sound-only")
+                ),
+                "仅提示音提醒",
             )
             self.assertGreaterEqual(
                 dialog.alert_display_mode.minimumWidth(),

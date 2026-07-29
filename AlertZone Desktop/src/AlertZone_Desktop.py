@@ -88,6 +88,7 @@ ALERT_DISPLAY_OPTIONS = (
     ("live", "实时预览"),
     ("zoom-red", "全屏红色且放大人物"),
     ("live-red", "全屏红色且实时预览"),
+    ("sound-only", "仅提示音提醒"),
 )
 ALERT_IMAGE_MODES = {"zoom", "zoom-red", "live", "live-red"}
 ALERT_LIVE_MODES = {"live", "live-red"}
@@ -1309,7 +1310,7 @@ class AlertSettingsDialog(QDialog):
         form.addRow("告警触发时间", self.confirm_seconds)
         form.addRow("告警退出时长", self.auto_exit_seconds)
         form.addRow("等待重新布防", rearm_delay_field)
-        form.addRow("连续告警显示", self.continuous_alert_display)
+        form.addRow("持续跟随显示", self.continuous_alert_display)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 14, 12, 12)
@@ -3162,6 +3163,10 @@ class MainWindow(QMainWindow):
         self._dashboard.set_alert_display_mode(mode)
         if not self._alert_active:
             return
+        self._sync_alert_surface()
+        if mode == "sound-only":
+            self._stop_alert_live_preview()
+            return
         if mode in ALERT_LIVE_MODES:
             self._start_alert_live_preview()
         else:
@@ -3243,6 +3248,11 @@ class MainWindow(QMainWindow):
         mode = normalize_alert_display_mode(
             self._settings.value("alert/display_mode", "zoom")
         )
+        if mode == "sound-only":
+            self._popup.hide()
+            self._dashboard.hide_alert()
+            self._stop_alert_live_preview()
+            return
         surface_changed = False
         if self._alert_popup_allowed():
             self._dashboard.hide_alert()
