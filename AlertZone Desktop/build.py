@@ -14,6 +14,7 @@ APP_NAME = "AlertZone Desktop"
 ROOT_DIR = Path(__file__).resolve().parent
 ENTRY_FILE = ROOT_DIR / "start.py"
 ICON_DIR = ROOT_DIR / "icon"
+AUDIO_DIR = ROOT_DIR / "audio"
 
 
 def platform_icon() -> Path:
@@ -39,6 +40,8 @@ def build_arguments(onefile: bool, console: bool) -> list[str]:
         str(icon_path),
         "--add-data",
         f"{ICON_DIR}{os.pathsep}icon",
+        "--add-data",
+        f"{AUDIO_DIR}{os.pathsep}audio",
         "--hidden-import",
         "PySide6.QtMultimedia",
         "--distpath",
@@ -119,7 +122,12 @@ def main() -> int:
         return 2
     missing = [
         path
-        for path in (ENTRY_FILE, platform_icon(), ICON_DIR)
+        for path in (
+            ENTRY_FILE,
+            platform_icon(),
+            ICON_DIR,
+            AUDIO_DIR / "audio.mp3",
+        )
         if not path.exists()
     ]
     if missing:

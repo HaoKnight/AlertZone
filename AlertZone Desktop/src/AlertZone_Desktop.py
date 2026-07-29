@@ -33,6 +33,7 @@ from PySide6.QtGui import (
     QColor,
     QFontMetrics,
     QIcon,
+    QIntValidator,
     QPainter,
     QPalette,
     QPen,
@@ -90,6 +91,14 @@ ALERT_DISPLAY_OPTIONS = (
 )
 ALERT_IMAGE_MODES = {"zoom", "zoom-red", "live", "live-red"}
 ALERT_LIVE_MODES = {"live", "live-red"}
+REARM_DELAY_OPTIONS = (
+    (0, "不设置"),
+    (5, "5 秒"),
+    (10, "10 秒"),
+    (20, "20 秒"),
+    (30, "30 秒"),
+    (60, "60 秒"),
+)
 THEME_MODES = ("light", "dark", "follow-system")
 THEME_LABELS = {
     "light": "浅色主题",
@@ -105,11 +114,27 @@ ICON_CANDIDATES = (
     PROJECT_DIR / "icon.png",
     APP_DIR / "icon.png",
 )
+APP_DEFAULT_SOUND_CANDIDATES = (
+    PROJECT_DIR / "audio" / "audio.mp3",
+    APP_DIR / "audio" / "audio.mp3",
+)
 
 
 def app_icon_path() -> Path | None:
     """返回源码环境或打包环境中的程序图标。"""
     return next((path for path in ICON_CANDIDATES if path.is_file()), None)
+
+
+def app_default_sound_path() -> Path | None:
+    """返回源码环境或打包环境中的软件默认提示音。"""
+    return next(
+        (
+            path
+            for path in APP_DEFAULT_SOUND_CANDIDATES
+            if path.is_file()
+        ),
+        None,
+    )
 
 
 def setting_bool(settings: QSettings, key: str, default: bool) -> bool:
@@ -628,6 +653,7 @@ class ConnectionPage(QWidget):
     """首次启动时显示的局域网地址输入页。"""
 
     connect_requested = Signal(str)
+    cancel_requested = Signal()
 
     def __init__(self, settings: QSettings) -> None:
         super().__init__()
@@ -663,6 +689,14 @@ class ConnectionPage(QWidget):
         self.connect_button = QPushButton("连接")
         self.connect_button.setObjectName("primaryButton")
         self.connect_button.clicked.connect(self._submit)
+        self.cancel_button = QPushButton("取消")
+        self.cancel_button.setObjectName("connectionCancelButton")
+        self.cancel_button.clicked.connect(self.cancel_requested.emit)
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(8)
+        button_row.addWidget(self.connect_button, 1)
+        button_row.addWidget(self.cancel_button, 1)
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("connectionStatus")
@@ -672,7 +706,7 @@ class ConnectionPage(QWidget):
         card_layout.addWidget(subtitle)
         card_layout.addSpacing(6)
         card_layout.addWidget(self.address_edit)
-        card_layout.addWidget(self.connect_button)
+        card_layout.addLayout(button_row)
         card_layout.addWidget(self.status_label)
 
         outer = QVBoxLayout(self)
@@ -1190,6 +1224,58 @@ class AlertSettingsDialog(QDialog):
             if selected_auto_exit >= 0
             else self.auto_exit_seconds.findData(10)
         )
+
+        self.rearm_delay_seconds = DownwardComboBox()
+        self.rearm_delay_seconds.setAccessibleName("等待再次监测")
+        self.rearm_delay_seconds.setMinimumWidth(130)
+        self.rearm_delay_seconds.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        for value, label in REARM_DELAY_OPTIONS:
+            self.rearm_delay_seconds.addItem(label, value)
+        try:
+            saved_rearm_delay = max(
+                int(settings.value("alert/rearm_delay_seconds", 0)),
+                0,
+            )
+        except (TypeError, ValueError):
+            saved_rearm_delay = 0
+        selected_rearm_delay = self.rearm_delay_seconds.findData(
+            saved_rearm_delay
+        )
+        self.rearm_delay_seconds.addItem("自定义：", "custom")
+        self.rearm_custom_seconds = QLineEdit()
+        self.rearm_custom_seconds.setObjectName("rearmCustomSeconds")
+        self.rearm_custom_seconds.setPlaceholderText("输入秒数")
+        self.rearm_custom_seconds.setValidator(
+            QIntValidator(1, 86400, self.rearm_custom_seconds)
+        )
+        self.rearm_custom_seconds.setMaximumWidth(110)
+        self.rearm_custom_seconds.setText(
+            str(saved_rearm_delay)
+            if saved_rearm_delay > 0
+            and selected_rearm_delay < 0
+            else ""
+        )
+        self.rearm_custom_unit = QLabel("秒")
+        rearm_delay_field = QWidget()
+        rearm_delay_layout = QHBoxLayout(rearm_delay_field)
+        rearm_delay_layout.setContentsMargins(0, 0, 0, 0)
+        rearm_delay_layout.setSpacing(6)
+        rearm_delay_layout.addWidget(self.rearm_delay_seconds, 1)
+        rearm_delay_layout.addWidget(self.rearm_custom_seconds)
+        rearm_delay_layout.addWidget(self.rearm_custom_unit)
+        if selected_rearm_delay < 0:
+            selected_rearm_delay = self.rearm_delay_seconds.findData(
+                "custom"
+            )
+        self.rearm_delay_seconds.setCurrentIndex(selected_rearm_delay)
+        self.rearm_delay_seconds.currentIndexChanged.connect(
+            self._sync_rearm_custom_input
+        )
+        self._sync_rearm_custom_input()
+
         self.continuous_alert_display = QPushButton()
         self.continuous_alert_display.setObjectName("settingToggleButton")
         self.continuous_alert_display.setCheckable(True)
@@ -1222,6 +1308,7 @@ class AlertSettingsDialog(QDialog):
         form.addRow("告警显示风格", self.alert_display_mode)
         form.addRow("告警触发时间", self.confirm_seconds)
         form.addRow("告警退出时长", self.auto_exit_seconds)
+        form.addRow("等待重新布防", rearm_delay_field)
         form.addRow("连续告警显示", self.continuous_alert_display)
 
         layout = QVBoxLayout(self)
@@ -1248,6 +1335,15 @@ class AlertSettingsDialog(QDialog):
             "开启" if checked else "关闭"
         )
 
+    def _sync_rearm_custom_input(self, _index: int = -1) -> None:
+        custom_selected = (
+            self.rearm_delay_seconds.currentData() == "custom"
+        )
+        self.rearm_custom_seconds.setVisible(custom_selected)
+        self.rearm_custom_unit.setVisible(custom_selected)
+        if custom_selected and not self.rearm_custom_seconds.text():
+            self.rearm_custom_seconds.setText("60")
+
     @staticmethod
     def _dialog_buttons(save_slot: Any) -> QHBoxLayout:
         buttons = QHBoxLayout()
@@ -1263,6 +1359,23 @@ class AlertSettingsDialog(QDialog):
         return buttons
 
     def _save(self) -> None:
+        rearm_delay: Any = self.rearm_delay_seconds.currentData()
+        if rearm_delay == "custom":
+            try:
+                rearm_delay = int(
+                    self.rearm_custom_seconds.text().strip()
+                )
+            except (TypeError, ValueError):
+                rearm_delay = 0
+            if not 1 <= rearm_delay <= 86400:
+                QMessageBox.warning(
+                    self,
+                    "自定义时间无效",
+                    "请输入 1 至 86400 之间的秒数。",
+                )
+                self.rearm_custom_seconds.setFocus()
+                self.rearm_custom_seconds.selectAll()
+                return
         if not self.sound_settings.save():
             return
         self._settings.setValue(
@@ -1277,6 +1390,10 @@ class AlertSettingsDialog(QDialog):
         self._settings.setValue(
             "alert/auto_exit_seconds",
             self.auto_exit_seconds.currentData(),
+        )
+        self._settings.setValue(
+            "alert/rearm_delay_seconds",
+            max(int(rearm_delay), 0),
         )
         self._settings.setValue(
             "alert/continuous_display",
@@ -1311,9 +1428,10 @@ class SoundSettingsSection(QFrame):
         self.sound_mode.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToContents
         )
+        self.sound_mode.addItem("关闭提示音", "off")
+        self.sound_mode.addItem("软件默认提示音", "app-default")
         self.sound_mode.addItem("电脑默认提示音", "default")
         self.sound_mode.addItem("自定义声音文件", "custom")
-        self.sound_mode.addItem("关闭提示音", "off")
         mode_index = self.sound_mode.findData(
             str(settings.value("sound/mode", "default"))
         )
@@ -1363,7 +1481,7 @@ class SoundSettingsSection(QFrame):
         )
         form.addRow("提示音", self.sound_mode)
         form.addRow("自定义文件", sound_file_row)
-        form.addRow("自定义音量", volume_row)
+        form.addRow("音量", volume_row)
         form.addRow("", self._test_button)
 
         self.sound_path.textChanged.connect(self._sync_controls)
@@ -1374,15 +1492,19 @@ class SoundSettingsSection(QFrame):
         mode = str(self.sound_mode.currentData())
         custom = mode == "custom"
         sound_off = mode == "off"
+        uses_volume = mode in {"app-default", "custom"}
         valid_custom_file = Path(
             self.sound_path.text().strip()
         ).is_file()
+        app_default_available = app_default_sound_path() is not None
         self.sound_path.setEnabled(custom)
         self._browse_button.setEnabled(custom)
-        self.volume.setEnabled(custom)
-        self.volume_value.setEnabled(custom)
+        self.volume.setEnabled(uses_volume)
+        self.volume_value.setEnabled(uses_volume)
         self._test_button.setEnabled(
-            not sound_off and (not custom or valid_custom_file)
+            not sound_off
+            and (not custom or valid_custom_file)
+            and (mode != "app-default" or app_default_available)
         )
 
     def _choose_sound(self) -> None:
@@ -2679,6 +2801,11 @@ class MainWindow(QMainWindow):
         self._alert_exit_timer.timeout.connect(
             self._auto_exit_current_alert
         )
+        self._alert_rearm_timer = QTimer(self)
+        self._alert_rearm_timer.setSingleShot(True)
+        self._alert_rearm_timer.timeout.connect(
+            self._request_alert_rearm
+        )
         self._alert_countdown_timer = QTimer(self)
         self._alert_countdown_timer.setInterval(250)
         self._alert_countdown_timer.timeout.connect(
@@ -2703,6 +2830,9 @@ class MainWindow(QMainWindow):
 
         self._connection_page = ConnectionPage(self._settings)
         self._connection_page.connect_requested.connect(self.connect_to_server)
+        self._connection_page.cancel_requested.connect(
+            self.cancel_connection
+        )
         self._dashboard = NativeDashboard(self._settings)
         self._dashboard.alert_settings_requested.connect(
             self.open_alert_settings
@@ -2892,7 +3022,8 @@ class MainWindow(QMainWindow):
         self._dashboard.update_status(payload)
         self._monitor.set_server_url(server_url)
         if self._alert_enabled():
-            QTimer.singleShot(0, self._monitor.request_rearm)
+            self._alert_rearm_timer.stop()
+            QTimer.singleShot(0, self._request_alert_rearm)
         self._address_label.setText("● 已连接")
         self._address_label.setToolTip(server_url)
         self._address_label.setProperty("online", True)
@@ -2911,6 +3042,28 @@ class MainWindow(QMainWindow):
         self._topbar.setVisible(False)
         self._connection_page.address_edit.setFocus()
         self._connection_page.address_edit.selectAll()
+
+    def cancel_connection(self) -> None:
+        """取消当前地址验证，并返回可稍后重新连接的主页面。"""
+        if self._probe_reply is not None:
+            reply = self._probe_reply
+            self._probe_reply = None
+            reply.abort()
+            reply.deleteLater()
+        if not self._server_url:
+            self._settings.setValue("connection/auto_connect", False)
+        self._settings.sync()
+        self._connection_page.set_connecting(False, "")
+        self._stack.setCurrentWidget(self._dashboard)
+        self._dashboard.set_view_active(
+            bool(self._server_url) and self.isVisible()
+        )
+        self._topbar.setVisible(True)
+        if not self._server_url:
+            self._dashboard.set_connection(
+                False,
+                "尚未连接 AlertZone Server",
+            )
 
     def open_alert_settings(self) -> None:
         if self._alert_settings_dialog is not None:
@@ -2967,8 +3120,10 @@ class MainWindow(QMainWindow):
             )
         )
         self._sync_alert_exit_timer(restart=True)
-        if self._server_url and self._alert_enabled():
-            self._monitor.request_rearm()
+        if self._alert_rearm_timer.isActive():
+            self._schedule_alert_rearm()
+        elif self._server_url and self._alert_enabled():
+            self._request_alert_rearm()
 
     def _on_alert_enabled_changed(self, enabled: bool) -> None:
         if self._tray_alert_action is not None:
@@ -2976,9 +3131,11 @@ class MainWindow(QMainWindow):
             self._tray_alert_action.setChecked(enabled)
             self._tray_alert_action.blockSignals(False)
         if enabled:
+            self._alert_rearm_timer.stop()
             if self._server_url:
-                self._monitor.request_rearm()
+                self._request_alert_rearm()
             return
+        self._alert_rearm_timer.stop()
         self._dismiss_current_alert(rearm=False)
 
     def _on_tray_alert_toggled(self, enabled: bool) -> None:
@@ -2988,13 +3145,14 @@ class MainWindow(QMainWindow):
 
     def _on_continuous_monitoring_changed(self, enabled: bool) -> None:
         """连续监测开启后，让告警界面从当前时刻开始重新布防。"""
+        if not enabled:
+            return
         if (
-            enabled
-            and self._server_url
+            self._server_url
             and self._alert_enabled()
             and not self._alert_active
         ):
-            self._monitor.request_rearm()
+            self._request_alert_rearm()
 
     def _on_alert_display_mode_changed(self, mode: str) -> None:
         mode = normalize_alert_display_mode(mode)
@@ -3029,6 +3187,8 @@ class MainWindow(QMainWindow):
 
     def _show_intrusion(self, data: dict) -> None:
         if not self._alert_enabled():
+            return
+        if self._alert_rearm_timer.isActive():
             return
         self._alert_exit_timer.stop()
         self._latest_person_present = bool(
@@ -3220,6 +3380,50 @@ class MainWindow(QMainWindow):
             )
         )
 
+    def _alert_rearm_delay_seconds(self) -> int:
+        """返回退出告警后等待再次监测的秒数。"""
+        try:
+            return max(
+                int(
+                    self._settings.value(
+                        "alert/rearm_delay_seconds",
+                        0,
+                    )
+                ),
+                0,
+            )
+        except (TypeError, ValueError):
+            return 0
+
+    def _request_alert_rearm(self) -> None:
+        """等待期结束且配置仍允许时请求 Server 重新布防。"""
+        if (
+            self._alert_rearm_timer.isActive()
+            or not self._server_url
+            or not self._alert_enabled()
+        ):
+            return
+        self._monitor.request_rearm()
+
+    def _schedule_alert_rearm(self) -> None:
+        """按等待设置重新布防；设置了等待时间时不受连续监测开关影响。"""
+        self._alert_rearm_timer.stop()
+        if (
+            not self._server_url
+            or not self._alert_enabled()
+        ):
+            return
+        delay_seconds = self._alert_rearm_delay_seconds()
+        if delay_seconds > 0:
+            self._alert_rearm_timer.start(delay_seconds * 1000)
+            return
+        if setting_bool(
+            self._settings,
+            "alert/continuous",
+            False,
+        ):
+            self._request_alert_rearm()
+
     def _sync_alert_exit_timer(self, restart: bool = False) -> None:
         if not self._alert_active:
             self._alert_exit_timer.stop()
@@ -3291,14 +3495,9 @@ class MainWindow(QMainWindow):
         if (
             rearm
             and self._server_url
-            and setting_bool(
-                self._settings,
-                "alert/continuous",
-                False,
-            )
             and self._alert_enabled()
         ):
-            self._monitor.request_rearm()
+            self._schedule_alert_rearm()
 
     def _play_configured_sound(self) -> None:
         self._play_sound(
@@ -3311,15 +3510,20 @@ class MainWindow(QMainWindow):
         self._stop_sound()
         if mode == "off":
             return
+        sound_path: Path | None = None
+        if mode == "app-default":
+            sound_path = app_default_sound_path()
+        elif mode == "custom" and path:
+            custom_path = Path(path)
+            if custom_path.is_file():
+                sound_path = custom_path
         if (
-            mode == "custom"
-            and path
-            and Path(path).is_file()
+            sound_path is not None
             and self._audio_output is not None
             and self._player is not None
         ):
             self._audio_output.setVolume(max(0, min(volume, 100)) / 100.0)
-            self._player.setSource(QUrl.fromLocalFile(path))
+            self._player.setSource(QUrl.fromLocalFile(str(sound_path)))
             self._player.play()
         else:
             QApplication.beep()
@@ -3447,7 +3651,7 @@ class MainWindow(QMainWindow):
     def _set_background_mode(self, enabled: bool) -> None:
         self._background_mode = enabled
         if enabled and self._server_url and self._alert_popup_allowed():
-            self._monitor.request_rearm()
+            self._request_alert_rearm()
         self._sync_alert_surface()
 
     def changeEvent(self, event: QEvent) -> None:
@@ -3458,7 +3662,7 @@ class MainWindow(QMainWindow):
             self._dashboard.set_view_active(False)
             self._sync_alert_surface()
             if self._server_url and self._alert_popup_allowed():
-                self._monitor.request_rearm()
+                self._request_alert_rearm()
             return
         if not self._background_mode:
             if self._stack.currentWidget() is self._dashboard:
@@ -3478,6 +3682,7 @@ class MainWindow(QMainWindow):
         self._quitting = True
         self._settings.sync()
         self._alert_exit_timer.stop()
+        self._alert_rearm_timer.stop()
         self._alert_countdown_timer.stop()
         self._stop_alert_live_preview()
         self._stop_sound()

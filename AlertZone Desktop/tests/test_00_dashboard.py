@@ -18,11 +18,13 @@ from src.AlertZone_Desktop import (
     AlertPopup,
     AlertSettingsDialog,
     CloseActionDialog,
+    ConnectionPage,
     CurrentPageStack,
     MainWindow,
     MarqueeLabel,
     NativeDashboard,
     OtherSettingsDialog,
+    app_default_sound_path,
 )
 
 APP = QApplication.instance() or QApplication([])
@@ -57,6 +59,21 @@ class NativeDashboardTests(unittest.TestCase):
             "AlertZone Desktop · 服务端 · ©H-Knight",
         )
 
+    def test_connection_page_cancel_button_emits_request(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            page = ConnectionPage(settings)
+            cancel_requests = []
+            page.cancel_requested.connect(
+                lambda: cancel_requests.append(True)
+            )
+
+            self.assertEqual(page.cancel_button.text(), "取消")
+            page.cancel_button.click()
+            self.assertEqual(cancel_requests, [True])
+
     def test_tray_alert_switch_syncs_with_home_button(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = QSettings(
@@ -87,6 +104,11 @@ class NativeDashboardTests(unittest.TestCase):
             class FakeMainWindow:
                 _tray_alert_action = FakeAction()
                 _server_url = ""
+                _alert_rearm_timer = type(
+                    "FakeTimer",
+                    (),
+                    {"stop": lambda self: None},
+                )()
 
             fake_main_window = FakeMainWindow()
             MainWindow._on_alert_enabled_changed(
@@ -190,15 +212,21 @@ class NativeDashboardTests(unittest.TestCase):
                 def stop() -> None:
                     return
 
+                @staticmethod
+                def isActive() -> bool:
+                    return False
+
             class FakeWindow:
                 _settings = settings
                 _server_url = "http://127.0.0.1:8765"
                 _popup = FakePopup()
                 _monitor = FakeMonitor()
                 _alert_exit_timer = FakeTimer()
+                _alert_rearm_timer = FakeTimer()
                 _background_mode = False
                 _alert_popup_allowed = MainWindow._alert_popup_allowed
                 _alert_enabled = MainWindow._alert_enabled
+                _request_alert_rearm = MainWindow._request_alert_rearm
                 sync_count = 0
 
                 @staticmethod
@@ -599,9 +627,14 @@ class NativeDashboardTests(unittest.TestCase):
                 def stop(self) -> None:
                     self.stopped = True
 
+                @staticmethod
+                def isActive() -> bool:
+                    return False
+
             class FakeWindow:
                 _settings = settings
                 _alert_exit_timer = FakeTimer()
+                _alert_rearm_timer = FakeTimer()
                 _latest_person_present = False
                 _current_alert_event = 0
                 _current_alert_people = 1
@@ -648,6 +681,34 @@ class NativeDashboardTests(unittest.TestCase):
             self.assertEqual(window.surface_syncs, 1)
             self.assertEqual(window.sound_plays, 1)
             self.assertEqual(window.exit_syncs, 1)
+
+    def test_intrusion_is_ignored_during_rearm_wait(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            settings.setValue("alert/enabled", True)
+
+            class ActiveTimer:
+                @staticmethod
+                def isActive() -> bool:
+                    return True
+
+            class FakeWindow:
+                _settings = settings
+                _alert_rearm_timer = ActiveTimer()
+                _alert_active = False
+                _alert_enabled = MainWindow._alert_enabled
+
+            window = FakeWindow()
+            MainWindow._show_intrusion(
+                window,
+                {
+                    "intrusion_event_id": 8,
+                    "intrusion_people_count": 1,
+                },
+            )
+            self.assertFalse(window._alert_active)
 
     def test_alert_frames_do_not_expand_the_window_size_hint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -701,6 +762,9 @@ class NativeDashboardTests(unittest.TestCase):
                 240,
             )
             self.assertEqual(dialog.auto_exit_seconds.currentData(), 10)
+            self.assertEqual(dialog.rearm_delay_seconds.currentData(), 0)
+            self.assertTrue(dialog.rearm_custom_seconds.isHidden())
+            self.assertTrue(dialog.rearm_custom_unit.isHidden())
             self.assertFalse(dialog.continuous_alert_display.isChecked())
             self.assertEqual(
                 [
@@ -709,10 +773,20 @@ class NativeDashboardTests(unittest.TestCase):
                 ],
                 [2, 5, 10, 15, 0],
             )
+            self.assertEqual(
+                [
+                    dialog.rearm_delay_seconds.itemData(index)
+                    for index in range(dialog.rearm_delay_seconds.count())
+                ],
+                [0, 5, 10, 20, 30, 60, "custom"],
+            )
             self.assertFalse(hasattr(dialog, "continuous_enabled"))
             self.assertFalse(hasattr(dialog, "theme_mode"))
             self.assertFalse(hasattr(dialog, "alert_enabled"))
             dialog.continuous_alert_display.setChecked(True)
+            dialog.rearm_delay_seconds.setCurrentIndex(
+                dialog.rearm_delay_seconds.findData(20)
+            )
             dialog._save()
             self.assertTrue(
                 settings.value(
@@ -720,6 +794,14 @@ class NativeDashboardTests(unittest.TestCase):
                     False,
                     type=bool,
                 )
+            )
+            self.assertEqual(
+                settings.value(
+                    "alert/rearm_delay_seconds",
+                    0,
+                    type=int,
+                ),
+                20,
             )
 
     def test_continuous_alert_display_waits_for_person_to_leave(self) -> None:
@@ -791,6 +873,30 @@ class NativeDashboardTests(unittest.TestCase):
             MainWindow._sync_alert_exit_timer(window, restart=True)
             self.assertEqual(window._alert_exit_timer.starts, [10000, 10000])
 
+    def test_custom_rearm_delay_is_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dialog = AlertSettingsDialog(settings)
+            dialog.rearm_delay_seconds.setCurrentIndex(
+                dialog.rearm_delay_seconds.findData("custom")
+            )
+            self.assertFalse(dialog.rearm_custom_seconds.isHidden())
+            self.assertFalse(dialog.rearm_custom_unit.isHidden())
+            self.assertEqual(dialog.rearm_custom_unit.text(), "秒")
+            dialog.rearm_custom_seconds.setText("75")
+            dialog._save()
+
+            self.assertEqual(
+                settings.value(
+                    "alert/rearm_delay_seconds",
+                    0,
+                    type=int,
+                ),
+                75,
+            )
+
     def test_continuous_monitoring_is_controlled_from_home(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = QSettings(
@@ -806,6 +912,59 @@ class NativeDashboardTests(unittest.TestCase):
                 settings.value("alert/continuous", False, type=bool)
             )
             self.assertEqual(changes, [True])
+
+    def test_rearm_delay_waits_before_requesting_server(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            settings.setValue("alert/enabled", True)
+            settings.setValue("alert/continuous", False)
+            settings.setValue("alert/rearm_delay_seconds", 20)
+
+            class FakeTimer:
+                active = False
+                starts = []
+
+                def stop(self) -> None:
+                    self.active = False
+
+                def start(self, milliseconds: int) -> None:
+                    self.active = True
+                    self.starts.append(milliseconds)
+
+                def isActive(self) -> bool:
+                    return self.active
+
+            class FakeMonitor:
+                rearm_count = 0
+
+                def request_rearm(self) -> None:
+                    self.rearm_count += 1
+
+            class FakeWindow:
+                _settings = settings
+                _server_url = "http://127.0.0.1:8765"
+                _alert_rearm_timer = FakeTimer()
+                _monitor = FakeMonitor()
+                _alert_enabled = MainWindow._alert_enabled
+                _alert_rearm_delay_seconds = (
+                    MainWindow._alert_rearm_delay_seconds
+                )
+                _request_alert_rearm = MainWindow._request_alert_rearm
+
+            window = FakeWindow()
+            MainWindow._schedule_alert_rearm(window)
+            self.assertEqual(window._alert_rearm_timer.starts, [20000])
+            self.assertEqual(window._monitor.rearm_count, 0)
+
+            window._alert_rearm_timer.active = False
+            MainWindow._request_alert_rearm(window)
+            self.assertEqual(window._monitor.rearm_count, 1)
+
+            settings.setValue("alert/rearm_delay_seconds", 0)
+            MainWindow._schedule_alert_rearm(window)
+            self.assertEqual(window._monitor.rearm_count, 1)
 
     def test_alert_popup_switch_is_controlled_from_home(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -882,6 +1041,21 @@ class NativeDashboardTests(unittest.TestCase):
                 sound_preview=lambda *args: previews.append(args),
             )
             sound_settings = dialog.sound_settings
+            self.assertEqual(
+                sound_settings.sound_mode.itemText(0),
+                "关闭提示音",
+            )
+            self.assertEqual(
+                sound_settings.sound_mode.itemData(0),
+                "off",
+            )
+            self.assertEqual(
+                [
+                    sound_settings.sound_mode.itemData(index)
+                    for index in range(sound_settings.sound_mode.count())
+                ],
+                ["off", "app-default", "default", "custom"],
+            )
             sound_settings.sound_mode.setCurrentIndex(
                 sound_settings.sound_mode.findData("off")
             )
@@ -895,6 +1069,45 @@ class NativeDashboardTests(unittest.TestCase):
             dialog._save()
             self.assertEqual(settings.value("sound/mode"), "off")
             self.assertEqual(previews, [("off", "", 80)])
+
+    def test_software_default_sound_uses_bundled_audio(self) -> None:
+        bundled_sound = app_default_sound_path()
+        self.assertIsNotNone(bundled_sound)
+        self.assertTrue(bundled_sound.is_file())
+        self.assertEqual(bundled_sound.name, "audio.mp3")
+
+        class FakeAudioOutput:
+            volume = 0.0
+
+            def setVolume(self, volume: float) -> None:
+                self.volume = volume
+
+        class FakePlayer:
+            source = None
+            played = False
+
+            def setSource(self, source: object) -> None:
+                self.source = source
+
+            def play(self) -> None:
+                self.played = True
+
+        class FakeWindow:
+            _audio_output = FakeAudioOutput()
+            _player = FakePlayer()
+
+            @staticmethod
+            def _stop_sound() -> None:
+                return
+
+        window = FakeWindow()
+        MainWindow._play_sound(window, "app-default", "", 75)
+        self.assertAlmostEqual(window._audio_output.volume, 0.75)
+        self.assertTrue(window._player.played)
+        self.assertEqual(
+            window._player.source.toLocalFile(),
+            str(bundled_sound),
+        )
 
     def test_other_settings_is_reserved_placeholder(self) -> None:
         dialog = OtherSettingsDialog()
