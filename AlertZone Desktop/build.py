@@ -6,15 +6,92 @@ import argparse
 import importlib.util
 import os
 import platform
+import plistlib
 import subprocess
 import sys
 from pathlib import Path
 
 APP_NAME = "AlertZone Desktop"
+APP_VERSION = "1.1.0"
 ROOT_DIR = Path(__file__).resolve().parent
 ENTRY_FILE = ROOT_DIR / "start.py"
 ICON_DIR = ROOT_DIR / "icon"
 AUDIO_DIR = ROOT_DIR / "audio"
+WINDOWS_VERSION_FILE = ROOT_DIR / "build" / "windows_version_info.txt"
+
+
+def version_tuple() -> tuple[int, int, int, int]:
+    """将语义版本转换为 Windows 版本资源要求的四段数字。"""
+    parts = [int(part) for part in APP_VERSION.split(".")]
+    normalized = (parts + [0, 0, 0, 0])[:4]
+    return normalized[0], normalized[1], normalized[2], normalized[3]
+
+
+def write_windows_version_file() -> Path:
+    """生成 Windows 可执行文件使用的 PyInstaller 版本资源。"""
+    major, minor, patch, build = version_tuple()
+    WINDOWS_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WINDOWS_VERSION_FILE.write_text(
+        f"""VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=({major}, {minor}, {patch}, {build}),
+    prodvers=({major}, {minor}, {patch}, {build}),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        '040904B0',
+        [StringStruct('CompanyName', 'H-Knight'),
+         StringStruct('FileDescription', '{APP_NAME}'),
+         StringStruct('FileVersion', '{APP_VERSION}'),
+         StringStruct('InternalName', '{APP_NAME}'),
+         StringStruct('OriginalFilename', '{APP_NAME}.exe'),
+         StringStruct('ProductName', '{APP_NAME}'),
+         StringStruct('ProductVersion', '{APP_VERSION}')]
+      )
+    ]),
+    VarFileInfo([VarStruct('Translation', [1033, 1200])])
+  ]
+)
+""",
+        encoding="utf-8",
+    )
+    return WINDOWS_VERSION_FILE
+
+
+def write_macos_bundle_version(app_path: Path) -> Path:
+    """把发布版本写入 macOS 应用包的 Info.plist。"""
+    plist_path = app_path / "Contents" / "Info.plist"
+    with plist_path.open("rb") as plist_file:
+        info = plistlib.load(plist_file)
+    info["CFBundleShortVersionString"] = APP_VERSION
+    info["CFBundleVersion"] = APP_VERSION
+    with plist_path.open("wb") as plist_file:
+        plistlib.dump(info, plist_file, fmt=plistlib.FMT_XML, sort_keys=False)
+    return plist_path
+
+
+def finalize_macos_bundle() -> None:
+    """写入 macOS 版本并重新进行 ad-hoc 签名。"""
+    app_path = ROOT_DIR / "dist" / f"{APP_NAME}.app"
+    write_macos_bundle_version(app_path)
+    subprocess.run(
+        [
+            "/usr/bin/codesign",
+            "--force",
+            "--deep",
+            "--sign",
+            "-",
+            str(app_path),
+        ],
+        check=True,
+    )
 
 
 def platform_icon() -> Path:
@@ -54,7 +131,12 @@ def build_arguments(onefile: bool, console: bool) -> list[str]:
     arguments.append("--console" if console else "--windowed")
     if onefile:
         arguments.append("--onefile")
-    if platform.system() == "Darwin":
+    system = platform.system()
+    if system == "Windows":
+        arguments.extend(
+            ["--version-file", str(WINDOWS_VERSION_FILE)]
+        )
+    if system == "Darwin":
         arguments.extend(
             [
                 "--osx-bundle-identifier",
@@ -144,6 +226,9 @@ def main() -> int:
         )
         return 2
     (ROOT_DIR / "build").mkdir(parents=True, exist_ok=True)
+    system = platform.system()
+    if system == "Windows":
+        write_windows_version_file()
     subprocess.run(
         build_arguments(
             select_onefile(args.package_mode),
@@ -152,7 +237,9 @@ def main() -> int:
         cwd=ROOT_DIR,
         check=True,
     )
-    print(f"打包完成：{ROOT_DIR / 'dist'}")
+    if system == "Darwin":
+        finalize_macos_bundle()
+    print(f"打包完成 v{APP_VERSION}：{ROOT_DIR / 'dist'}")
     return 0
 
 

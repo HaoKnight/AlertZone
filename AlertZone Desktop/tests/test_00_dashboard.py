@@ -578,7 +578,7 @@ class NativeDashboardTests(unittest.TestCase):
             self.assertIs(popup._button.parent(), popup._image)
             self.assertEqual(
                 popup._detail.text(),
-                "检测到 2 人进入监控区域",
+                "检测到 2 人进入",
             )
             self.assertEqual(
                 popup._countdown.text(),
@@ -694,8 +694,9 @@ class NativeDashboardTests(unittest.TestCase):
 
                 def _sync_alert_surface(self) -> None:
                     self.surface_syncs += 1
+                    self._sync_alert_sound()
 
-                def _play_configured_sound(self) -> None:
+                def _sync_alert_sound(self) -> None:
                     self.sound_plays += 1
 
                 @staticmethod
@@ -781,15 +782,131 @@ class NativeDashboardTests(unittest.TestCase):
                 _dashboard = HiddenSurface()
                 _alert_enabled = MainWindow._alert_enabled
                 preview_stopped = False
+                sound_synced = False
 
                 def _stop_alert_live_preview(self) -> None:
                     self.preview_stopped = True
+
+                def _sync_alert_sound(self) -> None:
+                    self.sound_synced = True
 
             window = FakeWindow()
             MainWindow._sync_alert_surface(window)
             self.assertTrue(window._popup.hidden)
             self.assertTrue(window._dashboard.hidden)
             self.assertTrue(window.preview_stopped)
+            self.assertTrue(window.sound_synced)
+
+    def test_sound_follows_alert_surface_and_exit_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            settings.setValue("alert/enabled", True)
+            settings.setValue("alert/display_mode", "zoom")
+            settings.setValue("sound/mode", "app-default")
+
+            class FakeSurface:
+                active = False
+
+                def is_alert_active(self) -> bool:
+                    return self.active
+
+            class FakeWindow:
+                _settings = settings
+                _alert_active = True
+                _current_alert_event = 12
+                _alert_sound_event = None
+                _alert_sound_signature = None
+                _popup = FakeSurface()
+                _dashboard = FakeSurface()
+                _alert_enabled = MainWindow._alert_enabled
+                _alert_surface_is_visible = (
+                    MainWindow._alert_surface_is_visible
+                )
+                played = 0
+                stopped = 0
+
+                def _play_configured_sound(self) -> None:
+                    self.played += 1
+
+                def _stop_sound(self) -> None:
+                    self.stopped += 1
+
+            window = FakeWindow()
+
+            # 视觉告警尚未真正显示时，不提前发出声音。
+            MainWindow._sync_alert_sound(window)
+            self.assertEqual(window.played, 0)
+
+            window._dashboard.active = True
+            MainWindow._sync_alert_sound(window)
+            MainWindow._sync_alert_sound(window)
+            self.assertEqual(window.played, 1)
+            self.assertEqual(window._alert_sound_event, 12)
+
+            # 自动或手动退出后，声音与告警同时结束。
+            window._alert_active = False
+            MainWindow._sync_alert_sound(window)
+            self.assertEqual(window.stopped, 1)
+            self.assertIsNone(window._alert_sound_event)
+
+            # “仅提示音”以声音本身作为告警，不要求视觉页面存在。
+            settings.setValue("alert/display_mode", "sound-only")
+            window._alert_active = True
+            window._current_alert_event = 13
+            window._dashboard.active = False
+            MainWindow._sync_alert_sound(window)
+            self.assertEqual(window.played, 2)
+
+    def test_continuous_display_does_not_repeat_sound(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            settings.setValue("alert/enabled", True)
+            settings.setValue("alert/continuous_display", True)
+
+            class InactiveTimer:
+                @staticmethod
+                def isActive() -> bool:
+                    return False
+
+            class FakeWindow:
+                _settings = settings
+                _alert_rearm_timer = InactiveTimer()
+                _alert_active = True
+                _current_alert_event = 21
+                _latest_person_present = True
+                _alert_enabled = MainWindow._alert_enabled
+                exit_syncs = 0
+                surface_syncs = 0
+                sound_plays = 0
+
+                def _sync_alert_exit_timer(self) -> None:
+                    self.exit_syncs += 1
+
+                def _sync_alert_surface(self) -> None:
+                    self.surface_syncs += 1
+
+                def _play_configured_sound(self) -> None:
+                    self.sound_plays += 1
+
+            window = FakeWindow()
+            MainWindow._show_intrusion(
+                window,
+                {
+                    "intrusion_event_id": 22,
+                    "intrusion_people_count": 2,
+                    "person_present": True,
+                },
+            )
+
+            self.assertEqual(window._current_alert_event, 21)
+            self.assertTrue(window._latest_person_present)
+            self.assertEqual(window.exit_syncs, 1)
+            self.assertEqual(window.surface_syncs, 0)
+            self.assertEqual(window.sound_plays, 0)
 
     def test_alert_frames_do_not_expand_the_window_size_hint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1074,6 +1191,19 @@ class NativeDashboardTests(unittest.TestCase):
                 settings.value("alert/enabled", False, type=bool)
             )
             self.assertEqual(changes, [True])
+
+    def test_popup_warning_title_uses_compact_font(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            popup = AlertPopup(settings)
+            popup.ensurePolished()
+            self.assertEqual(popup._title.font().pixelSize(), 18)
+            self.assertEqual(
+                popup._title.text(),
+                "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️",
+            )
 
     def test_theme_button_cycles_and_follow_system_updates_live(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -1210,11 +1210,11 @@ class AlertPopup(QWidget):
             f"""
             AlertPopup {{ background: {background}; }}
             #alertTitle {{
-                min-height: 32px;
+                min-height: 25px;
                 color: {title};
                 background: transparent;
                 border: none;
-                font-size: 22px;
+                font-size: 15px;
                 font-weight: 800;
             }}
             #alertImage {{
@@ -1306,7 +1306,7 @@ class AlertPopup(QWidget):
         )
         self.restore_saved_geometry()
         self._title.setText("⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️")
-        people_text = f"检测到 {max(people_count, 1)} 人进入监控区域"
+        people_text = f"检测到 {max(people_count, 1)} 人进入"
         self._image.set_alert_detail(
             people_text,
             event_time,
@@ -2058,7 +2058,7 @@ class AlertCanvas(ScaledPixmapLabel):
         self.setMouseTracking(True)
 
         self.detail_label = MarqueeLabel(
-            "检测到 1 人进入监控区域",
+            "检测到 1 人进入",
             self,
         )
         self.detail_label.setObjectName("mainAlertDetail")
@@ -2668,7 +2668,7 @@ class NativeDashboard(QWidget):
         """在主页面中显示与 Web 端一致的告警内容。"""
         self.set_alert_display_mode(mode)
         people_text = (
-            f"检测到 {max(people_count, 1)} 人进入监控区域"
+            f"检测到 {max(people_count, 1)} 人进入"
         )
         self.alert_image.set_alert_detail(people_text, event_time)
         self.alert_image.configure_action("退出告警", False)
@@ -2982,6 +2982,8 @@ class MainWindow(QMainWindow):
         self._current_alert_timestamp = ""
         self._current_alert_image_available = False
         self._current_alert_countdown = ""
+        self._alert_sound_event: int | None = None
+        self._alert_sound_signature: tuple[str, str, int] | None = None
         self._background_mode = False
         saved_theme_mode = str(
             self._settings.value(
@@ -3345,6 +3347,7 @@ class MainWindow(QMainWindow):
             )
         )
         self._sync_alert_exit_timer(restart=True)
+        self._sync_alert_sound()
         if self._alert_rearm_timer.isActive():
             self._schedule_alert_rearm()
         elif self._server_url and self._alert_enabled():
@@ -3419,6 +3422,21 @@ class MainWindow(QMainWindow):
             return
         if self._alert_rearm_timer.isActive():
             return
+        if (
+            self._alert_active
+            and setting_bool(
+                self._settings,
+                "alert/continuous_display",
+                False,
+            )
+        ):
+            # 持续跟随期间属于同一个告警会话。人员离开前即使 Server
+            # 上报了新的事件编号，也不能重新播放提示音或重置告警。
+            self._latest_person_present = bool(
+                data.get("person_present", True)
+            )
+            self._sync_alert_exit_timer()
+            return
         self._alert_exit_timer.stop()
         self._latest_person_present = bool(
             data.get("person_present", True)
@@ -3442,7 +3460,6 @@ class MainWindow(QMainWindow):
         self._current_alert_countdown = ""
         self._alert_active = True
         self._sync_alert_surface()
-        self._play_configured_sound()
         self._sync_alert_exit_timer(restart=True)
 
     def _alert_enabled(self) -> bool:
@@ -3468,6 +3485,7 @@ class MainWindow(QMainWindow):
         if not self._alert_active or not self._alert_enabled():
             self._popup.hide()
             self._dashboard.hide_alert()
+            self._sync_alert_sound()
             return
         mode = normalize_alert_display_mode(
             self._settings.value("alert/display_mode", "zoom")
@@ -3476,6 +3494,7 @@ class MainWindow(QMainWindow):
             self._popup.hide()
             self._dashboard.hide_alert()
             self._stop_alert_live_preview()
+            self._sync_alert_sound()
             return
         surface_changed = False
         if self._alert_popup_allowed():
@@ -3504,6 +3523,7 @@ class MainWindow(QMainWindow):
         else:
             self._popup.hide()
             self._dashboard.hide_alert()
+        self._sync_alert_sound()
         if not surface_changed:
             return
         if mode in ALERT_LIVE_MODES:
@@ -3726,6 +3746,8 @@ class MainWindow(QMainWindow):
         self._dashboard.hide_alert()
         self._stop_alert_live_preview()
         self._stop_sound()
+        self._alert_sound_event = None
+        self._alert_sound_signature = None
         if (
             rearm
             and self._server_url
@@ -3739,6 +3761,40 @@ class MainWindow(QMainWindow):
             str(self._settings.value("sound/custom_path", "")),
             int(self._settings.value("sound/volume", 80)),
         )
+
+    def _sync_alert_sound(self) -> None:
+        """让提示音与当前告警及其显示/退出计时共用生命周期。"""
+        display_mode = normalize_alert_display_mode(
+            self._settings.value("alert/display_mode", "zoom")
+        )
+        sound_mode = str(self._settings.value("sound/mode", "default"))
+        sound_signature = (
+            sound_mode,
+            str(self._settings.value("sound/custom_path", "")),
+            int(self._settings.value("sound/volume", 80)),
+        )
+        should_play = (
+            self._alert_active
+            and self._alert_enabled()
+            and sound_mode != "off"
+            and (
+                display_mode == "sound-only"
+                or self._alert_surface_is_visible()
+            )
+        )
+        if not should_play:
+            if self._alert_sound_event is not None:
+                self._stop_sound()
+            self._alert_sound_event = None
+            self._alert_sound_signature = None
+            return
+        if (
+            self._alert_sound_event != self._current_alert_event
+            or self._alert_sound_signature != sound_signature
+        ):
+            self._play_configured_sound()
+            self._alert_sound_event = self._current_alert_event
+            self._alert_sound_signature = sound_signature
 
     def _play_sound(self, mode: str, path: str, volume: int) -> None:
         self._stop_sound()
