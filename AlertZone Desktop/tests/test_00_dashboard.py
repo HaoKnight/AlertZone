@@ -12,7 +12,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QPointF, QSettings, QSize, Qt, QTimer
 from PySide6.QtGui import QIcon, QMouseEvent, QPixmap
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QPushButton,
+    QSystemTrayIcon,
+    QWidget,
+)
 
 from src.AlertZone_Desktop import (
     WINDOW_TITLE,
@@ -119,6 +125,35 @@ class NativeDashboardTests(unittest.TestCase):
             self.assertTrue(
                 fake_main_window._tray_alert_action.checked
             )
+
+    def test_tray_left_click_restores_and_right_click_opens_menu(self) -> None:
+        class FakeMenu:
+            popup_count = 0
+
+            def popup(self, _position: object) -> None:
+                self.popup_count += 1
+
+        class FakeWindow:
+            _tray_menu = FakeMenu()
+            show_count = 0
+
+            def show_main_window(self) -> None:
+                self.show_count += 1
+
+        window = FakeWindow()
+        MainWindow._tray_activated(
+            window,
+            QSystemTrayIcon.ActivationReason.Trigger,
+        )
+        self.assertEqual(window.show_count, 1)
+        self.assertEqual(window._tray_menu.popup_count, 0)
+
+        MainWindow._tray_activated(
+            window,
+            QSystemTrayIcon.ActivationReason.Context,
+        )
+        self.assertEqual(window.show_count, 1)
+        self.assertEqual(window._tray_menu.popup_count, 1)
 
     def test_marquee_scrolls_only_when_text_does_not_fit(self) -> None:
         label = MarqueeLabel("检测到 12 人进入监控区域")

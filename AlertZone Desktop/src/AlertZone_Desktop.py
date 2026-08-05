@@ -31,6 +31,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
+    QCursor,
     QFontMetrics,
     QIcon,
     QIntValidator,
@@ -76,6 +77,15 @@ except ImportError:
     # 提示音会自动回退到系统默认声音。
     QAudioOutput = None
     QMediaPlayer = None
+
+try:
+    if sys.platform != "darwin":
+        raise ImportError
+    import AppKit
+    import objc
+except ImportError:
+    AppKit = None
+    objc = None
 
 APP_NAME = "AlertZone Desktop"
 WINDOW_TITLE = f"{APP_NAME} · 服务端 · ©H-Knight"
@@ -177,6 +187,159 @@ def set_macos_dock_icon_visible(visible: bool) -> None:
     except (AttributeError, OSError):
         # 不让系统接口差异影响窗口恢复或后台报警。
         return
+
+
+class NativeMacMenuAction:
+    """为原生 NSMenuItem 提供主窗口所需的 QAction 兼容接口。"""
+
+    def __init__(self, menu_item: Any) -> None:
+        self._menu_item = menu_item
+
+    def blockSignals(self, _blocked: bool) -> None:
+        return
+
+    def setChecked(self, checked: bool) -> None:
+        if AppKit is not None:
+            self._menu_item.setState_(
+                AppKit.NSControlStateValueOn
+                if checked
+                else AppKit.NSControlStateValueOff
+            )
+
+    def setText(self, text: str) -> None:
+        self._menu_item.setTitle_(text)
+
+
+if AppKit is not None and objc is not None:
+
+    class NativeMacTrayTarget(AppKit.NSObject):
+        """接收 macOS 菜单栏图标及原生菜单事件。"""
+
+        def initWithWindow_(self, window: Any) -> Any:
+            self = objc.super(NativeMacTrayTarget, self).init()
+            if self is not None:
+                self._window = window
+                self._status_item = None
+                self._menu = None
+            return self
+
+        @objc.IBAction
+        def statusItemClicked_(self, _sender: Any) -> None:
+            event = AppKit.NSApp.currentEvent()
+            event_type = event.type() if event is not None else None
+            if event_type in {
+                AppKit.NSEventTypeRightMouseDown,
+                AppKit.NSEventTypeRightMouseUp,
+            }:
+                self._status_item.popUpStatusItemMenu_(self._menu)
+                return
+            QTimer.singleShot(0, self._window.show_main_window)
+
+        @objc.IBAction
+        def openMainWindow_(self, _sender: Any) -> None:
+            QTimer.singleShot(0, self._window.show_main_window)
+
+        @objc.IBAction
+        def toggleAlert_(self, _sender: Any) -> None:
+            self._window._on_tray_alert_toggled(
+                not self._window._alert_enabled()
+            )
+
+        @objc.IBAction
+        def openAlertSettings_(self, _sender: Any) -> None:
+            QTimer.singleShot(0, self._window.open_alert_settings)
+
+        @objc.IBAction
+        def openOtherSettings_(self, _sender: Any) -> None:
+            QTimer.singleShot(0, self._window.open_other_settings)
+
+        @objc.IBAction
+        def quitApplication_(self, _sender: Any) -> None:
+            QTimer.singleShot(0, self._window.quit_application)
+
+
+class NativeMacTrayIcon:
+    """使用 AppKit 创建可区分左右键的原生 macOS 菜栏状态项。"""
+
+    def __init__(self, window: Any, icon_path: Path | None) -> None:
+        if AppKit is None or objc is None:
+            raise RuntimeError("当前环境未安装 macOS Cocoa 支持")
+        self._window = window
+        self._status_bar = AppKit.NSStatusBar.systemStatusBar()
+        self._status_item = self._status_bar.statusItemWithLength_(
+            AppKit.NSVariableStatusItemLength
+        )
+        self._target = NativeMacTrayTarget.alloc().initWithWindow_(window)
+        self._menu = AppKit.NSMenu.alloc().initWithTitle_(APP_NAME)
+        self._menu.setAutoenablesItems_(False)
+
+        button = self._status_item.button()
+        button.setTarget_(self._target)
+        button.setAction_("statusItemClicked:")
+        button.sendActionOn_(
+            AppKit.NSEventMaskLeftMouseUp
+            | AppKit.NSEventMaskRightMouseUp
+        )
+        if icon_path is not None:
+            image = AppKit.NSImage.alloc().initWithContentsOfFile_(
+                str(icon_path)
+            )
+            if image is not None:
+                image.setSize_(AppKit.NSMakeSize(18, 18))
+                button.setImage_(image)
+        button.setToolTip_(APP_NAME)
+
+        self._add_action("打开主界面", "openMainWindow:")
+        self.status_action = NativeMacMenuAction(
+            self._add_action("尚未连接", None, enabled=False)
+        )
+        self._menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        alert_item = self._add_action(
+            "启用告警",
+            "toggleAlert:",
+        )
+        alert_item.setState_(
+            AppKit.NSControlStateValueOn
+            if window._alert_enabled()
+            else AppKit.NSControlStateValueOff
+        )
+        self.alert_action = NativeMacMenuAction(alert_item)
+        self._add_action("告警设置", "openAlertSettings:")
+        self._add_action("其他配置", "openOtherSettings:")
+        self._menu.addItem_(AppKit.NSMenuItem.separatorItem())
+        self._add_action("退出", "quitApplication:")
+
+        self._target._status_item = self._status_item
+        self._target._menu = self._menu
+
+    def _add_action(
+        self,
+        title: str,
+        selector: str | None,
+        enabled: bool = True,
+    ) -> Any:
+        item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title,
+            selector,
+            "",
+        )
+        if selector is not None:
+            item.setTarget_(self._target)
+        item.setEnabled_(enabled)
+        self._menu.addItem_(item)
+        return item
+
+    def setToolTip(self, text: str) -> None:
+        self._status_item.button().setToolTip_(text)
+
+    def showMessage(self, *_args: Any) -> None:
+        # 原生菜单栏状态项不模拟 Qt 气泡，避免触发非原生通知样式。
+        return
+
+    def hide(self) -> None:
+        if self._status_item is not None:
+            self._status_bar.removeStatusItem_(self._status_item)
+            self._status_item = None
 
 
 def setting_bool(settings: QSettings, key: str, default: bool) -> bool:
@@ -2996,13 +3159,24 @@ class MainWindow(QMainWindow):
         self._topbar = topbar
 
     def _build_tray(self) -> None:
-        self._tray: QSystemTrayIcon | None = None
+        self._tray: Any | None = None
+        self._tray_menu: QMenu | None = None
         self._tray_alert_action: Any | None = None
+        self._tray_status_action: Any | None = None
+        if sys.platform == "darwin":
+            # macOS 只使用 Cocoa 状态栏，绝不静默回退到 Qt QMenu。
+            # 依赖缺失时保持主窗口可用，并由 hide_to_tray 阻止窗口失联。
+            if AppKit is not None and objc is not None:
+                tray = NativeMacTrayIcon(self, app_icon_path())
+                self._tray_status_action = tray.status_action
+                self._tray_alert_action = tray.alert_action
+                self._tray = tray
+            return
         if not QSystemTrayIcon.isSystemTrayAvailable():
             return
         tray = QSystemTrayIcon(self._icon, self)
         tray.setToolTip(APP_NAME)
-        menu = QMenu()
+        menu = QMenu(self)
         open_action = menu.addAction("打开主界面")
         open_action.triggered.connect(self.show_main_window)
         self._tray_status_action = menu.addAction("尚未连接")
@@ -3021,9 +3195,11 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         quit_action = menu.addAction("退出")
         quit_action.triggered.connect(self.quit_application)
-        tray.setContextMenu(menu)
+        # 不交给系统自动弹出菜单，避免 macOS 左键也打开菜单。
+        # 左右键行为统一在 activated 信号中区分。
         tray.activated.connect(self._tray_activated)
         tray.show()
+        self._tray_menu = menu
         self._tray = tray
 
     def connect_to_server(self, raw_url: str) -> None:
@@ -3672,10 +3848,16 @@ class MainWindow(QMainWindow):
 
     def hide_to_tray(self) -> None:
         if self._tray is None:
+            detail = (
+                "macOS 原生状态栏组件未加载，请安装 requirements.txt "
+                "中的 Cocoa 依赖后重新启动。"
+                if sys.platform == "darwin"
+                else "当前系统未提供托盘区域，主窗口将保持打开。"
+            )
             QMessageBox.information(
                 self,
                 "无法后台运行",
-                "当前系统未提供托盘区域，主窗口将保持打开。",
+                detail,
             )
             return
         self._set_background_mode(True)
@@ -3731,6 +3913,10 @@ class MainWindow(QMainWindow):
                 self._start_alert_live_preview()
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason == QSystemTrayIcon.ActivationReason.Context:
+            if self._tray_menu is not None:
+                self._tray_menu.popup(QCursor.pos())
+            return
         if reason in (
             QSystemTrayIcon.ActivationReason.Trigger,
             QSystemTrayIcon.ActivationReason.DoubleClick,

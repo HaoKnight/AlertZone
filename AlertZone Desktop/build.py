@@ -59,6 +59,12 @@ def build_arguments(onefile: bool, console: bool) -> list[str]:
             [
                 "--osx-bundle-identifier",
                 "com.hknight.alertzone.desktop",
+                "--hidden-import",
+                "AppKit",
+                "--hidden-import",
+                "Foundation",
+                "--hidden-import",
+                "objc",
             ]
         )
     arguments.append(str(ENTRY_FILE))

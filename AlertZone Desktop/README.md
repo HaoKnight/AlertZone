@@ -249,6 +249,9 @@ macOS 构建结果默认没有开发者签名和公证；对外分发时需要�
 - **取消**：返回主窗口，不执行关闭操作
 
 右键任务栏/托盘图标可直接勾选或取消“启用告警”，该状态与主页按钮双向同步。
+左键单击任务栏/托盘图标会直接恢复主窗口，不弹出菜单；只有右键单击才显示托盘菜单。
+macOS 使用系统原生 Cocoa `NSStatusItem` 和 `NSMenu`，不是 Qt 模拟菜单；安装依赖时会
+按平台自动安装 `pyobjc-framework-Cocoa`，打包脚本也会自动收集所需原生模块。
 
 ### 主页设置按钮
 
@@ -330,7 +333,8 @@ python -m unittest discover -s tests -v
 
 项目使用的核心组件：
 
-- [PySide6](https://doc.qt.io/qtforpython-6/)：桌面界面和系统托盘
+- [PySide6](https://doc.qt.io/qtforpython-6/)：桌面界面及 Windows/Linux 系统托盘
+- [PyObjC Cocoa](https://pyobjc.readthedocs.io/)：macOS 原生状态栏与原生菜单
 - [Qt Network](https://doc.qt.io/qtforpython-6/PySide6/QtNetwork/index.html)：连接验证和后台状态轮询
 - [Qt Multimedia](https://doc.qt.io/qtforpython-6/PySide6/QtMultimedia/index.html)：自定义报警声音播放
 
