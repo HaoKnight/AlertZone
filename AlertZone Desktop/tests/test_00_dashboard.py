@@ -6,6 +6,7 @@ import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -238,19 +239,26 @@ class NativeDashboardTests(unittest.TestCase):
                     FakeWindow.sync_count += 1
 
             window = FakeWindow()
-            MainWindow._set_background_mode(window, True)
-            self.assertTrue(window._background_mode)
-            self.assertFalse(
-                settings.value("alert/enabled", False, type=bool)
-            )
-            self.assertEqual(window._monitor.rearm_count, 0)
+            with patch(
+                "src.AlertZone_Desktop.set_macos_dock_icon_visible"
+            ) as dock_visibility:
+                MainWindow._set_background_mode(window, True)
+                self.assertTrue(window._background_mode)
+                self.assertFalse(
+                    settings.value("alert/enabled", False, type=bool)
+                )
+                self.assertEqual(window._monitor.rearm_count, 0)
 
-            settings.setValue("alert/enabled", True)
-            MainWindow._set_background_mode(window, True)
-            self.assertEqual(window._monitor.rearm_count, 1)
+                settings.setValue("alert/enabled", True)
+                MainWindow._set_background_mode(window, True)
+                self.assertEqual(window._monitor.rearm_count, 1)
 
-            MainWindow._set_background_mode(window, False)
-            self.assertEqual(window.sync_count, 3)
+                MainWindow._set_background_mode(window, False)
+                self.assertEqual(window.sync_count, 3)
+                self.assertEqual(
+                    [call.args[0] for call in dock_visibility.call_args_list],
+                    [False, False, True],
+                )
 
     def test_home_uses_dedicated_setting_buttons(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -264,6 +272,10 @@ class NativeDashboardTests(unittest.TestCase):
             self.assertEqual(
                 dashboard.popup_settings_button.text(), "弹窗位置"
             )
+            dashboard.set_alert_display_mode("sound-only")
+            self.assertFalse(dashboard.popup_settings_button.isEnabled())
+            dashboard.set_alert_display_mode("zoom")
+            self.assertTrue(dashboard.popup_settings_button.isEnabled())
             self.assertEqual(
                 dashboard.other_settings_button.text(), "其他配置"
             )

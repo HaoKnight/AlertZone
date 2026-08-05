@@ -93,7 +93,7 @@ ALERT_DISPLAY_OPTIONS = (
 ALERT_IMAGE_MODES = {"zoom", "zoom-red", "live", "live-red"}
 ALERT_LIVE_MODES = {"live", "live-red"}
 REARM_DELAY_OPTIONS = (
-    (0, "不设置"),
+    (0, "立即"),
     (5, "5 秒"),
     (10, "10 秒"),
     (20, "20 秒"),
@@ -136,6 +136,47 @@ def app_default_sound_path() -> Path | None:
         ),
         None,
     )
+
+
+def set_macos_dock_icon_visible(visible: bool) -> None:
+    """运行时切换 macOS Dock 图标；其他平台保持不变。"""
+    if sys.platform != "darwin":
+        return
+    try:
+        import ctypes
+
+        objc = ctypes.cdll.LoadLibrary("/usr/lib/libobjc.A.dylib")
+        ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/AppKit.framework/AppKit"
+        )
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.objc_getClass.argtypes = [ctypes.c_char_p]
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+
+        message_send = objc.objc_msgSend
+        message_send.restype = ctypes.c_void_p
+        message_send.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        application = message_send(
+            objc.objc_getClass(b"NSApplication"),
+            objc.sel_registerName(b"sharedApplication"),
+        )
+
+        message_send.restype = ctypes.c_bool
+        message_send.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_long,
+        ]
+        # Regular(0) 显示 Dock；Accessory(1) 保留菜单栏托盘但隐藏 Dock。
+        message_send(
+            application,
+            objc.sel_registerName(b"setActivationPolicy:"),
+            0 if visible else 1,
+        )
+    except (AttributeError, OSError):
+        # 不让系统接口差异影响窗口恢复或后台报警。
+        return
 
 
 def setting_bool(settings: QSettings, key: str, default: bool) -> bool:
@@ -2490,6 +2531,13 @@ class NativeDashboard(QWidget):
 
     def set_alert_display_mode(self, mode: str) -> None:
         mode = normalize_alert_display_mode(mode)
+        popup_position_available = mode != "sound-only"
+        self.popup_settings_button.setEnabled(popup_position_available)
+        self.popup_settings_button.setToolTip(
+            ""
+            if popup_position_available
+            else "仅提示音提醒不会显示告警小窗"
+        )
         self.alert_panel.setProperty(
             "redAlert",
             mode in {"zoom-red", "live-red"},
@@ -3660,6 +3708,7 @@ class MainWindow(QMainWindow):
 
     def _set_background_mode(self, enabled: bool) -> None:
         self._background_mode = enabled
+        set_macos_dock_icon_visible(not enabled)
         if enabled and self._server_url and self._alert_popup_allowed():
             self._request_alert_rearm()
         self._sync_alert_surface()
