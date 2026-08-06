@@ -24,6 +24,7 @@ runs/
 # PyInstaller 构建产物
 build/
 dist/
+dist-lite/
 *.spec
 
 # 编辑器配置与临时文件
