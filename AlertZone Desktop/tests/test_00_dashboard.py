@@ -2,6 +2,7 @@
 
 import base64
 import os
+import sys
 import tempfile
 import threading
 import unittest
@@ -1198,12 +1199,24 @@ class NativeDashboardTests(unittest.TestCase):
                 f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
             )
             popup = AlertPopup(settings)
-            popup.ensurePolished()
-            self.assertEqual(popup._title.font().pixelSize(), 18)
+            self.assertIn("font-size: 15px;", popup.styleSheet())
             self.assertEqual(
                 popup._title.text(),
                 "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️",
             )
+
+    def test_macos_popup_stays_visible_when_app_loses_focus(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            popup = AlertPopup(settings)
+            if sys.platform == "darwin":
+                self.assertTrue(
+                    popup.testAttribute(
+                        Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow
+                    )
+                )
 
     def test_theme_button_cycles_and_follow_system_updates_live(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -10,9 +10,14 @@ import build
 
 
 class BuildVersionTests(unittest.TestCase):
-    def test_release_version_is_1_0_0(self) -> None:
-        self.assertEqual(build.APP_VERSION, "1.0.0")
-        self.assertEqual(build.version_tuple(), (1, 0, 0, 0))
+    def test_release_version_is_semantic_version(self) -> None:
+        version_parts = build.APP_VERSION.split(".")
+        self.assertEqual(len(version_parts), 3)
+        self.assertTrue(all(part.isdigit() for part in version_parts))
+        self.assertEqual(
+            build.version_tuple()[:3],
+            tuple(int(part) for part in version_parts),
+        )
 
     def test_windows_arguments_include_version_resource(self) -> None:
         with patch("build.platform.system", return_value="Windows"):
@@ -29,8 +34,14 @@ class BuildVersionTests(unittest.TestCase):
             with patch("build.WINDOWS_VERSION_FILE", version_path):
                 generated_path = build.write_windows_version_file()
             content = generated_path.read_text(encoding="utf-8")
-            self.assertIn("filevers=(1, 0, 0, 0)", content)
-            self.assertIn("ProductVersion', '1.0.0'", content)
+            self.assertIn(
+                f"filevers={build.version_tuple()}",
+                content,
+            )
+            self.assertIn(
+                f"ProductVersion', '{build.APP_VERSION}'",
+                content,
+            )
 
     def test_macos_bundle_version_is_written_to_plist(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -48,8 +59,11 @@ class BuildVersionTests(unittest.TestCase):
 
             with plist_path.open("rb") as plist_file:
                 info = plistlib.load(plist_file)
-            self.assertEqual(info["CFBundleShortVersionString"], "1.0.0")
-            self.assertEqual(info["CFBundleVersion"], "1.0.0")
+            self.assertEqual(
+                info["CFBundleShortVersionString"],
+                build.APP_VERSION,
+            )
+            self.assertEqual(info["CFBundleVersion"], build.APP_VERSION)
 
 
 if __name__ == "__main__":

@@ -1125,6 +1125,13 @@ class AlertPopup(QWidget):
         self.setMinimumSize(0, 0)
         self.resize(460, 310)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
+        if sys.platform == "darwin":
+            # macOS 默认会在应用失去焦点时隐藏 Qt.Tool。告警窗必须持续
+            # 可见，直到倒计时结束或用户主动退出告警。
+            self.setAttribute(
+                Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow,
+                True,
+            )
 
         self._image = AlertCanvas()
         self._image.setObjectName("alertImage")
