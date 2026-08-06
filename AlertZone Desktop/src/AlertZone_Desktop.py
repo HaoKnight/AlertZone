@@ -1415,11 +1415,12 @@ class AlertSettingsDialog(QDialog):
             QSizePolicy.Policy.Fixed,
         )
         for value, label in (
+            (0, "立即"),
             (2, "2 秒"),
             (5, "5 秒"),
             (10, "10 秒"),
             (15, "15 秒"),
-            (0, "∞"),
+            (-1, "∞"),
         ):
             self.auto_exit_seconds.addItem(label, value)
         saved_auto_exit = int(
@@ -3707,7 +3708,10 @@ class MainWindow(QMainWindow):
         self._alert_exit_timer.stop()
         self._alert_countdown_timer.stop()
         auto_exit = self._alert_auto_exit_seconds()
-        if auto_exit > 0:
+        if auto_exit == 0:
+            self._set_alert_countdown("立即退出")
+            QTimer.singleShot(0, self._auto_exit_current_alert)
+        elif auto_exit > 0:
             self._alert_exit_timer.start(auto_exit * 1000)
             self._set_alert_countdown(
                 f"{auto_exit} 秒后退出告警"

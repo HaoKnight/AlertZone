@@ -982,7 +982,14 @@ class NativeDashboardTests(unittest.TestCase):
                     dialog.auto_exit_seconds.itemData(index)
                     for index in range(dialog.auto_exit_seconds.count())
                 ],
-                [2, 5, 10, 15, 0],
+                [0, 2, 5, 10, 15, -1],
+            )
+            self.assertEqual(dialog.auto_exit_seconds.itemText(0), "立即")
+            self.assertEqual(
+                dialog.auto_exit_seconds.itemText(
+                    dialog.auto_exit_seconds.count() - 1
+                ),
+                "∞",
             )
             self.assertEqual(
                 [
@@ -1083,6 +1090,62 @@ class NativeDashboardTests(unittest.TestCase):
             settings.setValue("alert/continuous_display", False)
             MainWindow._sync_alert_exit_timer(window, restart=True)
             self.assertEqual(window._alert_exit_timer.starts, [10000, 10000])
+
+    def test_immediate_and_infinite_alert_exit_options(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            settings.setValue("alert/continuous_display", False)
+            settings.setValue("alert/auto_exit_seconds", 0)
+
+            class FakeTimer:
+                @staticmethod
+                def stop() -> None:
+                    return
+
+                @staticmethod
+                def isActive() -> bool:
+                    return False
+
+            class FakeWindow:
+                _settings = settings
+                _alert_exit_timer = FakeTimer()
+                _alert_countdown_timer = FakeTimer()
+                _alert_active = True
+                _latest_person_present = False
+                _alert_auto_exit_seconds = (
+                    MainWindow._alert_auto_exit_seconds
+                )
+                exit_calls = 0
+
+                def __init__(self) -> None:
+                    self.countdown_texts = []
+
+                def _set_alert_countdown(self, text: str) -> None:
+                    self.countdown_texts.append(text)
+
+                def _auto_exit_current_alert(self) -> None:
+                    self.exit_calls += 1
+
+            window = FakeWindow()
+            scheduled = []
+            with patch.object(
+                QTimer,
+                "singleShot",
+                side_effect=lambda delay, callback: scheduled.append(
+                    (delay, callback)
+                ),
+            ):
+                MainWindow._sync_alert_exit_timer(window)
+            self.assertEqual(window.countdown_texts[-1], "立即退出")
+            self.assertEqual(scheduled[0][0], 0)
+            scheduled[0][1]()
+            self.assertEqual(window.exit_calls, 1)
+
+            settings.setValue("alert/auto_exit_seconds", -1)
+            MainWindow._sync_alert_exit_timer(window, restart=True)
+            self.assertEqual(window.countdown_texts[-1], "手动退出")
 
     def test_custom_rearm_delay_is_saved(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
