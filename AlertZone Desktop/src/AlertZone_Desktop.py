@@ -21,6 +21,7 @@ from PySide6.QtCore import (
     QPoint,
     QRect,
     QRectF,
+    QLocale,
     QSettings,
     QSize,
     Qt,
@@ -32,10 +33,12 @@ from PySide6.QtGui import (
     QCloseEvent,
     QColor,
     QCursor,
+    QDoubleValidator,
     QFontMetrics,
     QIcon,
     QIntValidator,
     QPainter,
+    QPainterPath,
     QPalette,
     QPen,
     QPixmap,
@@ -1186,33 +1189,35 @@ class AlertPopup(QWidget):
     def _apply_visual_style(self) -> None:
         mode = self._display_mode
         self._image.setVisible(mode in ALERT_IMAGE_MODES)
-        if mode in {"zoom-red", "live-red"}:
+        red_alert = mode in {"zoom-red", "live-red"}
+        if red_alert:
             background = "#e00018"
             title = "#ffffff"
             image_background = "#290006"
             image_text = "#ffd7dc"
-            border = "#ffffff"
+            image_border = "1px solid #ffffff"
             button = "#ffffff"
             button_hover = "#ffe5e8"
             button_text = "#a50012"
         elif self._theme == "dark":
-            background = "#24171a"
+            background = "#171a21"
             title = "#ffb0b5"
             image_background = "#10090b"
             image_text = "#d99da2"
-            border = "#713a40"
+            image_border = "none"
             button = "#e0444d"
             button_hover = "#f05a62"
             button_text = "#ffffff"
         else:
-            background = "#fff5f5"
+            background = "#eef1f4"
             title = "#b91c1c"
             image_background = "#2b1111"
             image_text = "#e9b8bc"
-            border = "#efb4b4"
+            image_border = "none"
             button = "#dc2626"
             button_hover = "#b91c1c"
             button_text = "#ffffff"
+        self._image.set_visual_frame(1 if red_alert else 0, 8)
         self.setStyleSheet(
             f"""
             AlertPopup {{ background: {background}; }}
@@ -1227,7 +1232,7 @@ class AlertPopup(QWidget):
             #alertImage {{
                 color: {image_text};
                 background: {image_background};
-                border: 1px solid {border};
+                border: {image_border};
                 border-radius: 8px;
             }}
             #mainAlertDetail, #mainAlertCountdown {{
@@ -1403,10 +1408,50 @@ class AlertSettingsDialog(QDialog):
             (2.0, "2 秒"),
         ):
             self.confirm_seconds.addItem(label, value)
-        selected = self.confirm_seconds.findData(
-            float(settings.value("alert/confirm_seconds", 0.2))
+        self.confirm_seconds.addItem("自定义：", "custom")
+        try:
+            saved_confirm = max(
+                float(settings.value("alert/confirm_seconds", 0.2)),
+                0.0,
+            )
+        except (TypeError, ValueError):
+            saved_confirm = 0.2
+        if not math.isfinite(saved_confirm):
+            saved_confirm = 0.2
+        selected_confirm = self.confirm_seconds.findData(saved_confirm)
+        self.confirm_custom_seconds = QLineEdit()
+        self.confirm_custom_seconds.setObjectName("confirmCustomSeconds")
+        self.confirm_custom_seconds.setPlaceholderText("输入秒数")
+        confirm_validator = QDoubleValidator(
+            0.001,
+            86400.0,
+            3,
+            self.confirm_custom_seconds,
         )
-        self.confirm_seconds.setCurrentIndex(max(selected, 0))
+        confirm_validator.setNotation(
+            QDoubleValidator.Notation.StandardNotation
+        )
+        confirm_validator.setLocale(QLocale.c())
+        self.confirm_custom_seconds.setValidator(confirm_validator)
+        self.confirm_custom_seconds.setMaximumWidth(110)
+        self.confirm_custom_seconds.setText(
+            f"{saved_confirm:g}" if selected_confirm < 0 else ""
+        )
+        self.confirm_custom_unit = QLabel("秒")
+        confirm_field = QWidget()
+        confirm_layout = QHBoxLayout(confirm_field)
+        confirm_layout.setContentsMargins(0, 0, 0, 0)
+        confirm_layout.setSpacing(6)
+        confirm_layout.addWidget(self.confirm_seconds, 1)
+        confirm_layout.addWidget(self.confirm_custom_seconds)
+        confirm_layout.addWidget(self.confirm_custom_unit)
+        if selected_confirm < 0:
+            selected_confirm = self.confirm_seconds.findData("custom")
+        self.confirm_seconds.setCurrentIndex(selected_confirm)
+        self.confirm_seconds.currentIndexChanged.connect(
+            self._sync_confirm_custom_input
+        )
+        self._sync_confirm_custom_input()
 
         self.auto_exit_seconds = DownwardComboBox()
         self.auto_exit_seconds.setMinimumWidth(130)
@@ -1423,20 +1468,52 @@ class AlertSettingsDialog(QDialog):
             (-1, "∞"),
         ):
             self.auto_exit_seconds.addItem(label, value)
-        saved_auto_exit = int(
-            settings.value(
-                "alert/auto_exit_seconds",
-                settings.value("popup/auto_close_seconds", 10),
+        self.auto_exit_seconds.addItem("自定义：", "custom")
+        try:
+            saved_auto_exit = int(
+                settings.value(
+                    "alert/auto_exit_seconds",
+                    settings.value("popup/auto_close_seconds", 10),
+                )
             )
-        )
+        except (TypeError, ValueError):
+            saved_auto_exit = 10
         selected_auto_exit = self.auto_exit_seconds.findData(
             saved_auto_exit
         )
+        self.auto_exit_custom_seconds = QLineEdit()
+        self.auto_exit_custom_seconds.setObjectName(
+            "autoExitCustomSeconds"
+        )
+        self.auto_exit_custom_seconds.setPlaceholderText("输入秒数")
+        self.auto_exit_custom_seconds.setValidator(
+            QIntValidator(1, 86400, self.auto_exit_custom_seconds)
+        )
+        self.auto_exit_custom_seconds.setMaximumWidth(110)
+        self.auto_exit_custom_seconds.setText(
+            str(saved_auto_exit)
+            if saved_auto_exit > 0 and selected_auto_exit < 0
+            else ""
+        )
+        self.auto_exit_custom_unit = QLabel("秒")
+        auto_exit_field = QWidget()
+        auto_exit_layout = QHBoxLayout(auto_exit_field)
+        auto_exit_layout.setContentsMargins(0, 0, 0, 0)
+        auto_exit_layout.setSpacing(6)
+        auto_exit_layout.addWidget(self.auto_exit_seconds, 1)
+        auto_exit_layout.addWidget(self.auto_exit_custom_seconds)
+        auto_exit_layout.addWidget(self.auto_exit_custom_unit)
+        if selected_auto_exit < 0:
+            selected_auto_exit = self.auto_exit_seconds.findData("custom")
         self.auto_exit_seconds.setCurrentIndex(
             selected_auto_exit
             if selected_auto_exit >= 0
             else self.auto_exit_seconds.findData(10)
         )
+        self.auto_exit_seconds.currentIndexChanged.connect(
+            self._sync_auto_exit_custom_input
+        )
+        self._sync_auto_exit_custom_input()
 
         self.rearm_delay_seconds = DownwardComboBox()
         self.rearm_delay_seconds.setAccessibleName("等待再次监测")
@@ -1519,8 +1596,8 @@ class AlertSettingsDialog(QDialog):
             QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
         form.addRow("告警显示风格", self.alert_display_mode)
-        form.addRow("告警触发时间", self.confirm_seconds)
-        form.addRow("告警退出时长", self.auto_exit_seconds)
+        form.addRow("告警触发时间", confirm_field)
+        form.addRow("告警退出时长", auto_exit_field)
         form.addRow("等待重新布防", rearm_delay_field)
         form.addRow("持续跟随显示", self.continuous_alert_display)
 
@@ -1548,6 +1625,22 @@ class AlertSettingsDialog(QDialog):
             "开启" if checked else "关闭"
         )
 
+    def _sync_confirm_custom_input(self, _index: int = -1) -> None:
+        custom_selected = self.confirm_seconds.currentData() == "custom"
+        self.confirm_custom_seconds.setVisible(custom_selected)
+        self.confirm_custom_unit.setVisible(custom_selected)
+        if custom_selected and not self.confirm_custom_seconds.text():
+            self.confirm_custom_seconds.setText("3")
+
+    def _sync_auto_exit_custom_input(self, _index: int = -1) -> None:
+        custom_selected = (
+            self.auto_exit_seconds.currentData() == "custom"
+        )
+        self.auto_exit_custom_seconds.setVisible(custom_selected)
+        self.auto_exit_custom_unit.setVisible(custom_selected)
+        if custom_selected and not self.auto_exit_custom_seconds.text():
+            self.auto_exit_custom_seconds.setText("30")
+
     def _sync_rearm_custom_input(self, _index: int = -1) -> None:
         custom_selected = (
             self.rearm_delay_seconds.currentData() == "custom"
@@ -1572,6 +1665,45 @@ class AlertSettingsDialog(QDialog):
         return buttons
 
     def _save(self) -> None:
+        confirm_seconds: Any = self.confirm_seconds.currentData()
+        if confirm_seconds == "custom":
+            try:
+                confirm_seconds = float(
+                    self.confirm_custom_seconds.text().strip()
+                )
+            except (TypeError, ValueError):
+                confirm_seconds = 0.0
+            if (
+                not math.isfinite(confirm_seconds)
+                or not 0 < confirm_seconds <= 86400
+            ):
+                QMessageBox.warning(
+                    self,
+                    "自定义时间无效",
+                    "告警触发时间请输入大于 0 且不超过 86400 的秒数。",
+                )
+                self.confirm_custom_seconds.setFocus()
+                self.confirm_custom_seconds.selectAll()
+                return
+
+        auto_exit_seconds: Any = self.auto_exit_seconds.currentData()
+        if auto_exit_seconds == "custom":
+            try:
+                auto_exit_seconds = int(
+                    self.auto_exit_custom_seconds.text().strip()
+                )
+            except (TypeError, ValueError):
+                auto_exit_seconds = 0
+            if not 1 <= auto_exit_seconds <= 86400:
+                QMessageBox.warning(
+                    self,
+                    "自定义时间无效",
+                    "告警退出时长请输入 1 至 86400 之间的秒数。",
+                )
+                self.auto_exit_custom_seconds.setFocus()
+                self.auto_exit_custom_seconds.selectAll()
+                return
+
         rearm_delay: Any = self.rearm_delay_seconds.currentData()
         if rearm_delay == "custom":
             try:
@@ -1598,11 +1730,11 @@ class AlertSettingsDialog(QDialog):
             ),
         )
         self._settings.setValue(
-            "alert/confirm_seconds", self.confirm_seconds.currentData()
+            "alert/confirm_seconds", confirm_seconds
         )
         self._settings.setValue(
             "alert/auto_exit_seconds",
-            self.auto_exit_seconds.currentData(),
+            auto_exit_seconds,
         )
         self._settings.setValue(
             "alert/rearm_delay_seconds",
@@ -1994,6 +2126,8 @@ class ScaledPixmapLabel(QLabel):
     def __init__(self, placeholder: str) -> None:
         super().__init__(placeholder)
         self._source_pixmap: QPixmap | None = None
+        self._frame_width = 0
+        self._corner_radius = 0.0
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(0, 0)
         self.setSizePolicy(
@@ -2019,18 +2153,44 @@ class ScaledPixmapLabel(QLabel):
 
     def displayed_pixmap_rect(self) -> QRect:
         """返回保持比例缩放后，图像在标签中的实际显示区域。"""
+        content_rect = self.contentsRect()
         if self._source_pixmap is None:
-            return self.rect()
+            return content_rect
         scaled_size = self._source_pixmap.size().scaled(
-            self.size(),
+            content_rect.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
         )
         return QRect(
-            max((self.width() - scaled_size.width()) // 2, 0),
-            max((self.height() - scaled_size.height()) // 2, 0),
+            content_rect.x()
+            + max(
+                (content_rect.width() - scaled_size.width()) // 2,
+                0,
+            ),
+            content_rect.y()
+            + max(
+                (content_rect.height() - scaled_size.height()) // 2,
+                0,
+            ),
             scaled_size.width(),
             scaled_size.height(),
         )
+
+    def set_visual_frame(
+        self,
+        border_width: int,
+        corner_radius: float,
+    ) -> None:
+        """让图像避开样式表边框，并裁切在圆角内容区域内。"""
+        self._frame_width = max(int(border_width), 0)
+        self._corner_radius = max(float(corner_radius), 0.0)
+        self.setContentsMargins(
+            self._frame_width,
+            self._frame_width,
+            self._frame_width,
+            self._frame_width,
+        )
+        self._update_scaled_pixmap()
+        self.update()
 
     def sizeHint(self) -> QSize:
         """避免缩放后的帧反向撑大布局并形成窗口放大循环。"""
@@ -2042,14 +2202,39 @@ class ScaledPixmapLabel(QLabel):
     def _update_scaled_pixmap(self) -> None:
         if self._source_pixmap is None:
             return
+        content_size = self.contentsRect().size()
+        if content_size.width() <= 0 or content_size.height() <= 0:
+            self.setPixmap(QPixmap())
+            return
         self.setText("")
-        self.setPixmap(
-            self._source_pixmap.scaled(
-                self.size(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
+        scaled = self._source_pixmap.scaled(
+            content_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
         )
+        inner_radius = max(
+            self._corner_radius - self._frame_width,
+            0.0,
+        )
+        if inner_radius > 0 and not scaled.isNull():
+            rounded = QPixmap(scaled.size())
+            rounded.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(rounded)
+            painter.setRenderHint(
+                QPainter.RenderHint.Antialiasing,
+                True,
+            )
+            clip_path = QPainterPath()
+            clip_path.addRoundedRect(
+                QRectF(rounded.rect()),
+                inner_radius,
+                inner_radius,
+            )
+            painter.setClipPath(clip_path)
+            painter.drawPixmap(0, 0, scaled)
+            painter.end()
+            scaled = rounded
+        self.setPixmap(scaled)
 
     def resizeEvent(self, event: Any) -> None:
         super().resizeEvent(event)
@@ -2702,6 +2887,7 @@ class NativeDashboard(QWidget):
 
     def set_alert_display_mode(self, mode: str) -> None:
         mode = normalize_alert_display_mode(mode)
+        red_alert = mode in {"zoom-red", "live-red"}
         popup_position_available = mode != "sound-only"
         self.popup_settings_button.setEnabled(popup_position_available)
         self.popup_settings_button.setToolTip(
@@ -2711,9 +2897,10 @@ class NativeDashboard(QWidget):
         )
         self.alert_panel.setProperty(
             "redAlert",
-            mode in {"zoom-red", "live-red"},
+            red_alert,
         )
         self.alert_panel.setProperty("displayMode", mode)
+        self.alert_image.set_visual_frame(3 if red_alert else 0, 9)
         self.alert_image.setVisible(mode in ALERT_IMAGE_MODES)
         for widget in (
             self.alert_panel,
@@ -4205,13 +4392,13 @@ class MainWindow(QMainWindow):
             #mainAlertImage {{
                 color: #f6c8cd;
                 background: #0b0d10;
-                border: 3px solid #ff4152;
+                border: none;
                 border-radius: 9px;
                 font-size: 15px;
             }}
             #mainAlertPanel[redAlert="true"] #mainAlertImage {{
                 color: white;
-                border-color: white;
+                border: 3px solid white;
             }}
             #mainAlertTitle {{
                 color: white;

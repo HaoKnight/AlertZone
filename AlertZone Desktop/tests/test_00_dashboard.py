@@ -490,6 +490,43 @@ class NativeDashboardTests(unittest.TestCase):
                 canvas.detail_label.text(),
             )
 
+    def test_alert_image_stays_inside_rounded_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dashboard = NativeDashboard(settings)
+            canvas = dashboard.alert_image
+            canvas.resize(300, 300)
+            source = QPixmap(400, 200)
+            source.fill(Qt.GlobalColor.green)
+            canvas._source_pixmap = source
+
+            dashboard.set_alert_display_mode("live-red")
+            canvas._update_scaled_pixmap()
+
+            margins = canvas.contentsMargins()
+            self.assertEqual(margins.left(), 3)
+            self.assertEqual(margins.top(), 3)
+            image_rect = canvas.displayed_pixmap_rect()
+            self.assertEqual(image_rect.left(), 3)
+            self.assertGreaterEqual(image_rect.top(), 3)
+            self.assertLessEqual(image_rect.right(), 296)
+            self.assertLessEqual(image_rect.bottom(), 296)
+
+            displayed = canvas.pixmap().toImage()
+            self.assertEqual(displayed.pixelColor(0, 0).alpha(), 0)
+            self.assertEqual(
+                displayed.pixelColor(
+                    displayed.width() // 2,
+                    displayed.height() // 2,
+                ).alpha(),
+                255,
+            )
+
+            dashboard.set_alert_display_mode("live")
+            self.assertEqual(canvas.contentsMargins().left(), 0)
+
     def test_all_controls_reveal_from_topbar_hover_when_narrow(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = QSettings(
@@ -565,6 +602,24 @@ class NativeDashboardTests(unittest.TestCase):
             for mode in ("zoom", "zoom-red", "live", "live-red"):
                 popup.set_display_mode(mode)
                 self.assertFalse(popup._image.isHidden())
+            popup.set_display_mode("zoom")
+            normal_image_style = (
+                popup.styleSheet()
+                .split("#alertImage {", 1)[1]
+                .split("}", 1)[0]
+            )
+            self.assertIn("border: none;", normal_image_style)
+            self.assertIn("background: #eef1f4;", popup.styleSheet())
+            popup.set_display_mode("zoom-red")
+            red_image_style = (
+                popup.styleSheet()
+                .split("#alertImage {", 1)[1]
+                .split("}", 1)[0]
+            )
+            self.assertIn(
+                "border: 1px solid #ffffff;",
+                red_image_style,
+            )
             popup.show_alert(2, "2026-07-28 10:30:00")
             APP.processEvents()
             self.assertEqual(popup.minimumSize(), QSize(0, 0))
@@ -974,6 +1029,10 @@ class NativeDashboardTests(unittest.TestCase):
             )
             self.assertEqual(dialog.auto_exit_seconds.currentData(), 10)
             self.assertEqual(dialog.rearm_delay_seconds.currentData(), 0)
+            self.assertTrue(dialog.confirm_custom_seconds.isHidden())
+            self.assertTrue(dialog.confirm_custom_unit.isHidden())
+            self.assertTrue(dialog.auto_exit_custom_seconds.isHidden())
+            self.assertTrue(dialog.auto_exit_custom_unit.isHidden())
             self.assertTrue(dialog.rearm_custom_seconds.isHidden())
             self.assertTrue(dialog.rearm_custom_unit.isHidden())
             self.assertFalse(dialog.continuous_alert_display.isChecked())
@@ -982,14 +1041,21 @@ class NativeDashboardTests(unittest.TestCase):
                     dialog.auto_exit_seconds.itemData(index)
                     for index in range(dialog.auto_exit_seconds.count())
                 ],
-                [0, 2, 5, 10, 15, -1],
+                [0, 2, 5, 10, 15, -1, "custom"],
             )
             self.assertEqual(dialog.auto_exit_seconds.itemText(0), "立即")
             self.assertEqual(
                 dialog.auto_exit_seconds.itemText(
-                    dialog.auto_exit_seconds.count() - 1
+                    dialog.auto_exit_seconds.findData(-1)
                 ),
                 "∞",
+            )
+            self.assertEqual(
+                [
+                    dialog.confirm_seconds.itemData(index)
+                    for index in range(dialog.confirm_seconds.count())
+                ],
+                [0.0, 0.2, 0.5, 1.0, 2.0, "custom"],
             )
             self.assertEqual(
                 [
@@ -1170,6 +1236,52 @@ class NativeDashboardTests(unittest.TestCase):
                 ),
                 75,
             )
+
+    def test_custom_trigger_and_exit_times_are_saved_and_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dialog = AlertSettingsDialog(settings)
+            dialog.confirm_seconds.setCurrentIndex(
+                dialog.confirm_seconds.findData("custom")
+            )
+            dialog.auto_exit_seconds.setCurrentIndex(
+                dialog.auto_exit_seconds.findData("custom")
+            )
+            self.assertFalse(dialog.confirm_custom_seconds.isHidden())
+            self.assertFalse(dialog.confirm_custom_unit.isHidden())
+            self.assertFalse(dialog.auto_exit_custom_seconds.isHidden())
+            self.assertFalse(dialog.auto_exit_custom_unit.isHidden())
+            dialog.confirm_custom_seconds.setText("3.5")
+            dialog.auto_exit_custom_seconds.setText("25")
+            dialog._save()
+
+            self.assertAlmostEqual(
+                settings.value(
+                    "alert/confirm_seconds",
+                    0.0,
+                    type=float,
+                ),
+                3.5,
+            )
+            self.assertEqual(
+                settings.value(
+                    "alert/auto_exit_seconds",
+                    0,
+                    type=int,
+                ),
+                25,
+            )
+
+            restored = AlertSettingsDialog(settings)
+            self.assertEqual(restored.confirm_seconds.currentData(), "custom")
+            self.assertEqual(
+                restored.auto_exit_seconds.currentData(),
+                "custom",
+            )
+            self.assertEqual(restored.confirm_custom_seconds.text(), "3.5")
+            self.assertEqual(restored.auto_exit_custom_seconds.text(), "25")
 
     def test_continuous_monitoring_is_controlled_from_home(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
