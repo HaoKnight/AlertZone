@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.AlertZone_Desktop import (
+    APP_VERSION,
     WINDOW_TITLE,
     AlertPopup,
     AlertSettingsDialog,
@@ -64,8 +65,9 @@ class NativeDashboardTests(unittest.TestCase):
     def test_main_window_title_uses_server_credit(self) -> None:
         self.assertEqual(
             WINDOW_TITLE,
-            "AlertZone Desktop · 服务端 · ©H-Knight",
+            "AlertZone Desktop 1.1.0 · ©H-Knight",
         )
+        self.assertEqual(APP_VERSION, "1.1.0")
 
     def test_connection_page_cancel_button_emits_request(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -595,6 +597,11 @@ class NativeDashboardTests(unittest.TestCase):
             self.assertEqual(dashboard.status_icon.text(), "!")
 
             popup = AlertPopup(settings)
+            self.assertFalse(popup._always_on_top_toggle.isVisible())
+            self.assertFalse(
+                popup.windowFlags()
+                & Qt.WindowType.WindowStaysOnTopHint
+            )
             self.assertEqual(popup.minimumSize(), QSize(0, 0))
             self.assertEqual(popup.minimumSizeHint(), QSize(0, 0))
             popup.set_display_mode("red")
@@ -646,6 +653,26 @@ class NativeDashboardTests(unittest.TestCase):
 
             popup.show_placement_preview()
             self.assertEqual(popup._title.text(), "弹窗位置")
+            self.assertTrue(popup._always_on_top_toggle.isVisible())
+            self.assertIs(
+                popup._always_on_top_toggle.parent(),
+                popup._image,
+            )
+            APP.processEvents()
+            option_rect = popup._always_on_top_toggle.geometry()
+            image_rect = popup._image.displayed_pixmap_rect()
+            self.assertTrue(image_rect.contains(option_rect))
+            self.assertFalse(option_rect.intersects(popup._button.geometry()))
+            self.assertFalse(option_rect.intersects(popup._detail.geometry()))
+            self.assertFalse(popup._always_on_top_toggle.isChecked())
+            popup._always_on_top_toggle.click()
+            self.assertTrue(
+                settings.value("popup/always_on_top", False, type=bool)
+            )
+            self.assertTrue(
+                popup.windowFlags()
+                & Qt.WindowType.WindowStaysOnTopHint
+            )
             self.assertEqual(
                 popup._button.text(),
                 "确定位置和大小",
@@ -1374,11 +1401,129 @@ class NativeDashboardTests(unittest.TestCase):
                 f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
             )
             popup = AlertPopup(settings)
-            self.assertIn("font-size: 15px;", popup.styleSheet())
+            self.assertNotIn("font-size: 15px;", popup.styleSheet())
             self.assertEqual(
                 popup._title.text(),
                 "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️",
             )
+            popup.resize(260, 240)
+            popup._sync_title_font()
+            compact_font_size = popup._title.font().pixelSize()
+            compact_title_height = popup._title.maximumHeight()
+            popup.resize(900, 600)
+            popup._sync_title_font()
+            self.assertGreater(
+                popup._title.font().pixelSize(),
+                compact_font_size,
+            )
+            self.assertGreater(
+                popup._title.maximumHeight(),
+                compact_title_height,
+            )
+
+    def test_main_alert_warning_title_scales_with_alert_panel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dashboard = NativeDashboard(settings)
+            dashboard.alert_panel.resize(260, 240)
+            dashboard._sync_alert_title_font()
+            compact_font_size = dashboard.alert_title.font().pixelSize()
+            compact_title_height = dashboard.alert_title.maximumHeight()
+
+            dashboard.alert_panel.resize(900, 600)
+            dashboard._sync_alert_title_font()
+            self.assertGreater(
+                dashboard.alert_title.font().pixelSize(),
+                compact_font_size,
+            )
+            self.assertGreater(
+                dashboard.alert_title.maximumHeight(),
+                compact_title_height,
+            )
+
+    def test_popup_shows_without_taking_focus(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            popup = AlertPopup(settings)
+            self.assertTrue(
+                popup.windowFlags()
+                & Qt.WindowType.WindowDoesNotAcceptFocus
+            )
+            self.assertTrue(
+                popup.testAttribute(
+                    Qt.WidgetAttribute.WA_ShowWithoutActivating
+                )
+            )
+
+    def test_macos_popup_joins_all_spaces_without_activation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            popup = AlertPopup(settings)
+            popup._set_always_on_top(True)
+
+            class FakeNativeWindow:
+                def __init__(self) -> None:
+                    self.behavior = 0
+                    self.level = None
+                    self.hides_on_deactivate = None
+                    self.ordered_front = False
+
+                def collectionBehavior(self) -> int:
+                    return self.behavior
+
+                def setCollectionBehavior_(self, behavior: int) -> None:
+                    self.behavior = behavior
+
+                def setLevel_(self, level: int) -> None:
+                    self.level = level
+
+                def setHidesOnDeactivate_(self, value: bool) -> None:
+                    self.hides_on_deactivate = value
+
+                def orderFrontRegardless(self) -> None:
+                    self.ordered_front = True
+
+            native_window = FakeNativeWindow()
+
+            class FakeView:
+                def window(self) -> FakeNativeWindow:
+                    return native_window
+
+            class FakeObjc:
+                @staticmethod
+                def objc_object(**_kwargs: object) -> FakeView:
+                    return FakeView()
+
+            class FakeAppKit:
+                NSWindowCollectionBehaviorCanJoinAllSpaces = 1
+                NSWindowCollectionBehaviorFullScreenAuxiliary = 2
+                NSWindowCollectionBehaviorStationary = 4
+                NSStatusWindowLevel = 25
+                NSNormalWindowLevel = 0
+
+            with patch("src.AlertZone_Desktop.sys.platform", "darwin"), patch(
+                "src.AlertZone_Desktop.AppKit", FakeAppKit
+            ), patch("src.AlertZone_Desktop.objc", FakeObjc), patch(
+                "src.AlertZone_Desktop.QApplication.platformName",
+                return_value="cocoa",
+            ):
+                self.assertTrue(popup._configure_macos_overlay())
+                self.assertEqual(native_window.behavior, 7)
+                self.assertEqual(native_window.level, 25)
+                self.assertFalse(native_window.hides_on_deactivate)
+                self.assertTrue(native_window.ordered_front)
+
+                popup._set_always_on_top(False)
+                self.assertFalse(popup._configure_macos_overlay())
+
+            self.assertEqual(native_window.behavior, 0)
+            self.assertEqual(native_window.level, 0)
 
     def test_macos_popup_stays_visible_when_app_loses_focus(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

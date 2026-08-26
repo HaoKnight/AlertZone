@@ -50,6 +50,7 @@ from PySide6.QtNetwork import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -91,7 +92,8 @@ except ImportError:
     objc = None
 
 APP_NAME = "AlertZone Desktop"
-WINDOW_TITLE = f"{APP_NAME} · 服务端 · ©H-Knight"
+APP_VERSION = "1.2.0"
+WINDOW_TITLE = f"{APP_NAME} {APP_VERSION} · ©H-Knight"
 ORGANIZATION_NAME = "AlertZone"
 DEFAULT_PORT = 8765
 POLL_INTERVAL_MS = 600
@@ -1109,17 +1111,23 @@ class AlertPopup(QWidget):
 
     dismissed = Signal()
     placement_confirmed = Signal(QByteArray)
+    _WARNING_TITLE = "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️"
 
     def __init__(self, settings: QSettings) -> None:
         super().__init__(
             None,
             Qt.WindowType.Tool
-            | Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.WindowDoesNotAcceptFocus
             | Qt.WindowType.WindowTitleHint
             | Qt.WindowType.WindowCloseButtonHint,
         )
         self._settings = settings
         self._placement_mode = False
+        self._always_on_top = setting_bool(
+            settings,
+            "popup/always_on_top",
+            False,
+        )
         self._theme = "light"
         self._display_mode = normalize_alert_display_mode(
             settings.value("alert/display_mode", "zoom")
@@ -1128,6 +1136,11 @@ class AlertPopup(QWidget):
         self.setMinimumSize(0, 0)
         self.resize(460, 310)
         self.setAttribute(Qt.WidgetAttribute.WA_QuitOnClose, False)
+        # 告警出现时仅显示，保持用户当前应用的鼠标与键盘焦点。
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating,
+            True,
+        )
         if sys.platform == "darwin":
             # macOS 默认会在应用失去焦点时隐藏 Qt.Tool。告警窗必须持续
             # 可见，直到倒计时结束或用户主动退出告警。
@@ -1144,15 +1157,23 @@ class AlertPopup(QWidget):
         self._countdown = self._image.countdown_label
         self._button = self._image.exit_button
 
-        self._title = QLabel(
-            "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️"
-        )
+        self._title = QLabel(self._WARNING_TITLE)
         self._title.setObjectName("alertTitle")
         self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._title.setMinimumWidth(0)
         self._title.setSizePolicy(
             QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Preferred,
+        )
+        self._always_on_top_toggle = QCheckBox(
+            "始终保持置顶",
+            self._image,
+        )
+        self._always_on_top_toggle.setObjectName("popupAlwaysOnTop")
+        self._always_on_top_toggle.setChecked(self._always_on_top)
+        self._always_on_top_toggle.hide()
+        self._always_on_top_toggle.toggled.connect(
+            self._set_always_on_top
         )
 
         layout = QVBoxLayout(self)
@@ -1165,6 +1186,11 @@ class AlertPopup(QWidget):
         layout.addWidget(self._image, 1)
 
         self.apply_theme("light")
+        self.setWindowFlag(
+            Qt.WindowType.WindowStaysOnTopHint,
+            self._always_on_top,
+        )
+        self._sync_title_font()
 
     def minimumSizeHint(self) -> QSize:
         return QSize(0, 0)
@@ -1222,11 +1248,10 @@ class AlertPopup(QWidget):
             f"""
             AlertPopup {{ background: {background}; }}
             #alertTitle {{
-                min-height: 25px;
+                min-height: 0;
                 color: {title};
                 background: transparent;
                 border: none;
-                font-size: 15px;
                 font-weight: 800;
             }}
             #alertImage {{
@@ -1234,6 +1259,26 @@ class AlertPopup(QWidget):
                 background: {image_background};
                 border: {image_border};
                 border-radius: 8px;
+            }}
+            #popupAlwaysOnTop {{
+                color: #ffffff;
+                background: rgba(15, 23, 42, 210);
+                border: 1px solid rgba(255, 255, 255, 150);
+                border-radius: 7px;
+                padding: 2px 7px;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+            #popupAlwaysOnTop::indicator {{
+                width: 14px;
+                height: 14px;
+                background: rgba(255, 255, 255, 38);
+                border: 1px solid rgba(255, 255, 255, 190);
+                border-radius: 3px;
+            }}
+            #popupAlwaysOnTop::indicator:checked {{
+                background: #22c55e;
+                border-color: #bbf7d0;
             }}
             #mainAlertDetail, #mainAlertCountdown {{
                 color: #ffffff;
@@ -1268,6 +1313,121 @@ class AlertPopup(QWidget):
             QColor(15, 23, 42, 205),
             QColor(255, 255, 255, 70),
         )
+        self._sync_title_font()
+
+    def resizeEvent(self, event: Any) -> None:
+        super().resizeEvent(event)
+        self._sync_title_font()
+        QTimer.singleShot(0, self._position_placement_option)
+
+    def _sync_title_font(self) -> None:
+        """让小窗顶部告警标题随窗口尺寸缩放且始终完整可见。"""
+        available_width = max(self.width() - 16, 1)
+        target_size = max(
+            10,
+            min(
+                round(min(self.width() / 29, self.height() / 17)),
+                30,
+            ),
+        )
+        font = self._title.font()
+        font.setBold(True)
+        while target_size > 9:
+            font.setPixelSize(target_size)
+            if (
+                QFontMetrics(font).horizontalAdvance(self._title.text())
+                <= available_width
+            ):
+                break
+            target_size -= 1
+        font.setPixelSize(target_size)
+        metrics = QFontMetrics(font)
+        title_height = max(metrics.height() + 5, target_size + 5)
+        self._title.setFont(font)
+        self._title.setMinimumHeight(title_height)
+        self._title.setMaximumHeight(title_height)
+
+    def _position_placement_option(self) -> None:
+        """将位置设置开关固定在预览画面的左上角。"""
+        if not self._always_on_top_toggle.isVisible():
+            return
+        content_rect = self._image.displayed_pixmap_rect()
+        edge_margin = max(
+            min(content_rect.height() // 24, 12),
+            6,
+        )
+        natural_size = self._always_on_top_toggle.sizeHint()
+        available_width = max(content_rect.width() - edge_margin * 2, 1)
+        width = min(natural_size.width(), available_width)
+        height = min(
+            natural_size.height(),
+            max(content_rect.height() - edge_margin * 2, 1),
+        )
+        self._always_on_top_toggle.setGeometry(
+            content_rect.left() + edge_margin,
+            content_rect.top() + edge_margin,
+            width,
+            height,
+        )
+        self._always_on_top_toggle.raise_()
+
+    def _set_always_on_top(self, enabled: bool) -> None:
+        """保存置顶偏好，并立即更新当前小窗的系统层级。"""
+        self._always_on_top = bool(enabled)
+        self._settings.setValue(
+            "popup/always_on_top",
+            self._always_on_top,
+        )
+        self._settings.sync()
+        was_visible = self.isVisible()
+        self.setWindowFlag(
+            Qt.WindowType.WindowStaysOnTopHint,
+            self._always_on_top,
+        )
+        if was_visible:
+            self.show()
+            if not self._configure_macos_overlay():
+                self.raise_()
+
+    def _configure_macos_overlay(self) -> bool:
+        """使告警小窗跨 Space 显示，并作为全屏应用的辅助窗口。"""
+        if (
+            sys.platform != "darwin"
+            or AppKit is None
+            or objc is None
+            or QApplication.platformName().lower() != "cocoa"
+        ):
+            return False
+        try:
+            # winId() 会确保 Qt 已创建对应的原生 NSWindow。
+            native_view = objc.objc_object(c_void_p=int(self.winId()))
+            native_window = native_view.window()
+            if native_window is None:
+                return False
+            behavior = native_window.collectionBehavior()
+            overlay_behavior = (
+                AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+                | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+                | AppKit.NSWindowCollectionBehaviorStationary
+            )
+            if not self._always_on_top:
+                native_window.setCollectionBehavior_(
+                    behavior & ~overlay_behavior
+                )
+                native_window.setLevel_(AppKit.NSNormalWindowLevel)
+                return False
+            behavior |= overlay_behavior
+            native_window.setCollectionBehavior_(behavior)
+            # 浮在全屏应用之上，但低于系统关键提示和屏幕保护层。
+            native_window.setLevel_(AppKit.NSStatusWindowLevel)
+            if hasattr(native_window, "setHidesOnDeactivate_"):
+                native_window.setHidesOnDeactivate_(False)
+            # 这个方法不会激活 AlertZone，但可让面板保持在其他 App 上方。
+            native_window.orderFrontRegardless()
+            return True
+        except Exception:
+            # 原生窗口接口不可用时退回 Qt 的普通置顶窗口。
+            return False
 
     def restore_saved_geometry(self) -> None:
         geometry = self._settings.value("popup/geometry")
@@ -1295,19 +1455,23 @@ class AlertPopup(QWidget):
         )
         self.restore_saved_geometry()
         self._title.setText("弹窗位置")
+        self._always_on_top_toggle.blockSignals(True)
+        self._always_on_top_toggle.setChecked(self._always_on_top)
+        self._always_on_top_toggle.blockSignals(False)
+        self._always_on_top_toggle.show()
+        self._sync_title_font()
         self._image.set_alert_detail(
             "拖动调整显示位置和大小。"
         )
         self._image.set_countdown_text("")
         self._image.clear_image(
-            "这里将显示实时预览"
-            if self._display_mode in ALERT_LIVE_MODES
-            else "这里将显示报警截图"
+            ""
         )
         self._image.configure_action("确定位置和大小", True)
         self.show()
-        self.raise_()
-        self.activateWindow()
+        QTimer.singleShot(0, self._position_placement_option)
+        if not self._configure_macos_overlay():
+            self.raise_()
 
     def show_alert(self, people_count: int, event_time: str = "") -> None:
         self._placement_mode = False
@@ -1317,7 +1481,9 @@ class AlertPopup(QWidget):
             )
         )
         self.restore_saved_geometry()
-        self._title.setText("⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️")
+        self._title.setText(self._WARNING_TITLE)
+        self._always_on_top_toggle.hide()
+        self._sync_title_font()
         people_text = f"检测到 {max(people_count, 1)} 人进入"
         self._image.set_alert_detail(
             people_text,
@@ -1331,8 +1497,8 @@ class AlertPopup(QWidget):
             else "正在获取报警截图…"
         )
         self.show()
-        self.raise_()
-        self.activateWindow()
+        if not self._configure_macos_overlay():
+            self.raise_()
 
     def set_event_image(self, image_data: bytes) -> None:
         if not self._image.set_image_data(image_data):
@@ -2688,6 +2854,7 @@ class NativeDashboard(QWidget):
         )
         self.sync_controls()
         self._status_density = ""
+        self._sync_alert_title_font()
 
     @staticmethod
     def _make_toggle_button(text: str) -> QPushButton:
@@ -2820,6 +2987,37 @@ class NativeDashboard(QWidget):
             self._sync_controls_card_visibility,
         )
         QTimer.singleShot(0, self._sync_status_density)
+        QTimer.singleShot(0, self._sync_alert_title_font)
+
+    def _sync_alert_title_font(self) -> None:
+        """让主窗口告警标题与告警画面尺寸同步缩放。"""
+        panel_width = max(self.alert_panel.width() - 16, 1)
+        panel_height = max(self.alert_panel.height(), 1)
+        target_size = max(
+            10,
+            min(
+                round(min(panel_width / 29, panel_height / 17)),
+                40,
+            ),
+        )
+        font = self.alert_title.font()
+        font.setBold(True)
+        while target_size > 9:
+            font.setPixelSize(target_size)
+            if (
+                QFontMetrics(font).horizontalAdvance(
+                    self.alert_title.text()
+                )
+                <= panel_width
+            ):
+                break
+            target_size -= 1
+        font.setPixelSize(target_size)
+        metrics = QFontMetrics(font)
+        title_height = max(metrics.height() + 6, target_size + 6)
+        self.alert_title.setFont(font)
+        self.alert_title.setMinimumHeight(title_height)
+        self.alert_title.setMaximumHeight(title_height)
 
     def _sync_status_density(self) -> None:
         """在低矮监测区域中同步缩放状态元素，避免图文相互覆盖。"""
@@ -2872,6 +3070,7 @@ class NativeDashboard(QWidget):
             else "正在获取报警截图…"
         )
         self.monitor_stack.setCurrentWidget(self.alert_panel)
+        self._sync_alert_title_font()
         self._update_preview_timer()
 
     def hide_alert(self) -> None:
@@ -2911,6 +3110,7 @@ class NativeDashboard(QWidget):
         ):
             widget.style().unpolish(widget)
             widget.style().polish(widget)
+        self._sync_alert_title_font()
 
     def set_alert_image(self, image_data: bytes) -> bool:
         return self.alert_image.set_image_data(image_data)
@@ -4402,11 +4602,10 @@ class MainWindow(QMainWindow):
             }}
             #mainAlertTitle {{
                 color: white;
-                min-height: 32px;
+                min-height: 0;
                 padding: 0;
                 background: transparent;
                 border: none;
-                font-size: 22px;
                 font-weight: 800;
             }}
             #mainAlertDetail {{
