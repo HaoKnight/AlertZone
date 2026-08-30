@@ -68,6 +68,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSlider,
     QStackedWidget,
@@ -111,6 +112,8 @@ ALERT_DISPLAY_OPTIONS = (
 )
 ALERT_IMAGE_MODES = {"zoom", "zoom-red", "live", "live-red"}
 ALERT_LIVE_MODES = {"live", "live-red"}
+DEFAULT_ALERT_TITLE = "⚠️⚠️⚠️警告⚠️⚠️⚠️"
+ALERT_TITLE_MODES = {"default", "off", "custom"}
 REARM_DELAY_OPTIONS = (
     (0, "立即"),
     (5, "5 秒"),
@@ -367,6 +370,27 @@ def normalize_alert_display_mode(value: Any) -> str:
     if mode == "yellow":
         return "zoom"
     return mode if mode in dict(ALERT_DISPLAY_OPTIONS) else "zoom"
+
+
+def normalize_alert_title_mode(value: Any) -> str:
+    """限制告警标题模式，兼容缺失或损坏的历史设置。"""
+    mode = str(value).strip().lower()
+    return mode if mode in ALERT_TITLE_MODES else "default"
+
+
+def resolved_alert_title(settings: QSettings) -> str:
+    """根据标题设置返回实际显示文本；空自定义值回退到默认标题。"""
+    mode = normalize_alert_title_mode(
+        settings.value("alert/title_mode", "default")
+    )
+    if mode == "off":
+        return ""
+    if mode == "custom":
+        custom_title = str(
+            settings.value("alert/custom_title", "")
+        ).strip()
+        return custom_title or DEFAULT_ALERT_TITLE
+    return DEFAULT_ALERT_TITLE
 
 
 class FlowLayout(QLayout):
@@ -1440,7 +1464,7 @@ class AlertPopup(QWidget):
 
     dismissed = Signal()
     placement_confirmed = Signal(QByteArray)
-    _WARNING_TITLE = "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️"
+    _WARNING_TITLE = DEFAULT_ALERT_TITLE
 
     def __init__(self, settings: QSettings) -> None:
         super().__init__(
@@ -1489,6 +1513,7 @@ class AlertPopup(QWidget):
 
         self._title = QLabel(self._WARNING_TITLE)
         self._title.setObjectName("alertTitle")
+        self._title.setTextFormat(Qt.TextFormat.PlainText)
         self._title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._title.setMinimumWidth(0)
         self._title.setSizePolicy(
@@ -1515,6 +1540,7 @@ class AlertPopup(QWidget):
         layout.addWidget(self._title)
         layout.addWidget(self._image, 1)
 
+        self.sync_alert_title()
         self.apply_theme("light")
         self.setWindowFlag(
             Qt.WindowType.WindowStaysOnTopHint,
@@ -1540,6 +1566,16 @@ class AlertPopup(QWidget):
 
     def display_mode(self) -> str:
         return self._display_mode
+
+    def sync_alert_title(self) -> None:
+        """将已保存的告警标题同步到弹窗，并在关闭时移除整行。"""
+        if self._placement_mode:
+            return
+        title = resolved_alert_title(self._settings)
+        self._title.setText(title)
+        self._title.setVisible(bool(title))
+        self._sync_title_font()
+        self._refresh_native_macos_alert()
 
     def is_alert_active(self) -> bool:
         native_visible = (
@@ -1582,6 +1618,12 @@ class AlertPopup(QWidget):
             button = "#dc2626"
             button_hover = "#b91c1c"
             button_text = "#ffffff"
+        if self._placement_mode:
+            # 位置设置中的确认按钮始终沿用“全屏红色且实时预览”
+            # 的按钮外观，避免切换告警显示风格后预览控件不一致。
+            button = "#ffffff"
+            button_hover = "#ffe5e8"
+            button_text = "#a50012"
         self._image.set_visual_frame(1 if red_alert else 0, 8)
         self.setStyleSheet(
             f"""
@@ -1878,6 +1920,7 @@ class AlertPopup(QWidget):
         )
         self.restore_saved_geometry()
         self._title.setText("弹窗位置")
+        self._title.show()
         self._always_on_top_toggle.blockSignals(True)
         self._always_on_top_toggle.setChecked(self._always_on_top)
         self._always_on_top_toggle.blockSignals(False)
@@ -1904,7 +1947,7 @@ class AlertPopup(QWidget):
             )
         )
         self.restore_saved_geometry()
-        self._title.setText(self._WARNING_TITLE)
+        self.sync_alert_title()
         self._always_on_top_toggle.hide()
         self._sync_title_font()
         people_text = f"检测到 {max(people_count, 1)} 人进入"
@@ -1994,6 +2037,45 @@ class AlertSettingsDialog(QDialog):
             )
         )
         self.alert_display_mode.setCurrentIndex(max(selected_mode, 0))
+
+        self.alert_title_mode = DownwardComboBox()
+        self.alert_title_mode.setAccessibleName("告警标题设置")
+        self.alert_title_mode.setMinimumWidth(130)
+        self.alert_title_mode.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.alert_title_mode.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToContents
+        )
+        for label, mode in (
+            ("保持默认", "default"),
+            ("关闭标题", "off"),
+            ("自定义", "custom"),
+        ):
+            self.alert_title_mode.addItem(label, mode)
+        saved_title_mode = normalize_alert_title_mode(
+            settings.value("alert/title_mode", "default")
+        )
+        self.alert_title_mode.setCurrentIndex(
+            max(self.alert_title_mode.findData(saved_title_mode), 0)
+        )
+        self.alert_custom_title = QLineEdit(
+            str(settings.value("alert/custom_title", ""))
+        )
+        self.alert_custom_title.setObjectName("alertCustomTitle")
+        self.alert_custom_title.setPlaceholderText("输入自定义告警标题")
+        self.alert_custom_title.setMaxLength(120)
+        alert_title_field = QWidget()
+        alert_title_layout = QHBoxLayout(alert_title_field)
+        alert_title_layout.setContentsMargins(0, 0, 0, 0)
+        alert_title_layout.setSpacing(6)
+        alert_title_layout.addWidget(self.alert_title_mode, 1)
+        alert_title_layout.addWidget(self.alert_custom_title, 2)
+        self.alert_title_mode.currentIndexChanged.connect(
+            self._sync_alert_title_custom_input
+        )
+        self._sync_alert_title_custom_input()
 
         self.confirm_seconds = DownwardComboBox()
         self.confirm_seconds.setMinimumWidth(130)
@@ -2188,25 +2270,46 @@ class AlertSettingsDialog(QDialog):
         title_label = QLabel("告警设置")
         title_label.setObjectName("dialogSectionTitle")
 
-        settings_card = QFrame()
-        settings_card.setObjectName("dialogCard")
-        form = QFormLayout(settings_card)
-        form.setContentsMargins(12, 10, 12, 10)
-        form.setSpacing(8)
-        form.setFieldGrowthPolicy(
+        page_config_title = QLabel("页面配置")
+        page_config_title.setObjectName("dialogSubsectionTitle")
+        page_config_card = QFrame()
+        page_config_card.setObjectName("dialogCard")
+        page_config_form = QFormLayout(page_config_card)
+        page_config_form.setContentsMargins(12, 10, 12, 10)
+        page_config_form.setSpacing(8)
+        page_config_form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
-        form.addRow("告警显示风格", self.alert_display_mode)
-        form.addRow("告警触发时间", confirm_field)
-        form.addRow("告警退出时长", auto_exit_field)
-        form.addRow("等待重新布防", rearm_delay_field)
-        form.addRow("持续跟随显示", self.continuous_alert_display)
+        page_config_form.addRow("告警显示风格", self.alert_display_mode)
+        page_config_form.addRow("告警标题设置", alert_title_field)
+        page_config_form.addRow(
+            "持续跟随显示", self.continuous_alert_display
+        )
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 14, 12, 12)
-        layout.setSpacing(6)
-        layout.addWidget(title_label)
-        layout.addWidget(settings_card)
+        time_config_title = QLabel("时间配置")
+        time_config_title.setObjectName("dialogSubsectionTitle")
+        time_config_card = QFrame()
+        time_config_card.setObjectName("dialogCard")
+        time_config_form = QFormLayout(time_config_card)
+        time_config_form.setContentsMargins(12, 10, 12, 10)
+        time_config_form.setSpacing(8)
+        time_config_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
+        time_config_form.addRow("告警触发时间", confirm_field)
+        time_config_form.addRow("告警退出时长", auto_exit_field)
+        time_config_form.addRow("重新布防时间", rearm_delay_field)
+
+        settings_content = QWidget()
+        settings_content.setObjectName("alertSettingsContent")
+        settings_content_layout = QVBoxLayout(settings_content)
+        settings_content_layout.setContentsMargins(0, 0, 0, 0)
+        settings_content_layout.setSpacing(6)
+        settings_content_layout.addWidget(page_config_title)
+        settings_content_layout.addWidget(page_config_card)
+        settings_content_layout.addSpacing(2)
+        settings_content_layout.addWidget(time_config_title)
+        settings_content_layout.addWidget(time_config_card)
         sound_title = QLabel("提示音")
         sound_title.setObjectName("dialogSectionTitle")
         self.sound_settings = SoundSettingsSection(
@@ -2214,17 +2317,43 @@ class AlertSettingsDialog(QDialog):
             sound_preview or (lambda *_args: None),
             self,
         )
+        settings_content_layout.addSpacing(2)
+        settings_content_layout.addWidget(sound_title)
+        settings_content_layout.addWidget(self.sound_settings)
+
+        self.settings_scroll_area = QScrollArea()
+        self.settings_scroll_area.setObjectName("alertSettingsScrollArea")
+        self.settings_scroll_area.setWidgetResizable(True)
+        self.settings_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.settings_scroll_area.viewport().setAutoFillBackground(False)
+        self.settings_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.settings_scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.settings_scroll_area.setWidget(settings_content)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 14, 12, 12)
+        layout.setSpacing(6)
+        layout.addWidget(title_label)
+        layout.addWidget(self.settings_scroll_area, 1)
         layout.addSpacing(2)
-        layout.addWidget(sound_title)
-        layout.addWidget(self.sound_settings)
-        layout.addSpacing(6)
         layout.addLayout(self._dialog_buttons(self._save))
-        self.adjustSize()
+        self.setMinimumSize(380, 380)
+        self.resize(400, 450)
 
     def _sync_continuous_display_button(self, checked: bool) -> None:
         self.continuous_alert_display.setText(
             "开启" if checked else "关闭"
         )
+
+    def _sync_alert_title_custom_input(self, _index: int = -1) -> None:
+        custom_selected = self.alert_title_mode.currentData() == "custom"
+        self.alert_custom_title.setVisible(custom_selected)
+        if custom_selected:
+            self.alert_custom_title.setFocus()
 
     def _sync_confirm_custom_input(self, _index: int = -1) -> None:
         custom_selected = self.confirm_seconds.currentData() == "custom"
@@ -2266,6 +2395,19 @@ class AlertSettingsDialog(QDialog):
         return buttons
 
     def _save(self) -> None:
+        title_mode = normalize_alert_title_mode(
+            self.alert_title_mode.currentData()
+        )
+        custom_title = self.alert_custom_title.text().strip()
+        if title_mode == "custom" and not custom_title:
+            QMessageBox.warning(
+                self,
+                "自定义标题为空",
+                "请输入自定义告警标题；如不需要标题，请选择“关闭标题”。",
+            )
+            self.alert_custom_title.setFocus()
+            return
+
         confirm_seconds: Any = self.confirm_seconds.currentData()
         if confirm_seconds == "custom":
             try:
@@ -2330,6 +2472,8 @@ class AlertSettingsDialog(QDialog):
                 self.alert_display_mode.currentData()
             ),
         )
+        self._settings.setValue("alert/title_mode", title_mode)
+        self._settings.setValue("alert/custom_title", custom_title)
         self._settings.setValue(
             "alert/confirm_seconds", confirm_seconds
         )
@@ -3229,10 +3373,9 @@ class NativeDashboard(QWidget):
         alert_layout = QVBoxLayout(self.alert_panel)
         alert_layout.setContentsMargins(8, 8, 8, 8)
         alert_layout.setSpacing(3)
-        self.alert_title = QLabel(
-            "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️"
-        )
+        self.alert_title = QLabel(DEFAULT_ALERT_TITLE)
         self.alert_title.setObjectName("mainAlertTitle")
+        self.alert_title.setTextFormat(Qt.TextFormat.PlainText)
         self.alert_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.alert_title.setMinimumWidth(0)
         self.alert_title.setSizePolicy(
@@ -3289,7 +3432,7 @@ class NativeDashboard(QWidget):
         )
         self.sync_controls()
         self._status_density = ""
-        self._sync_alert_title_font()
+        self.sync_alert_title()
 
     @staticmethod
     def _make_toggle_button(text: str) -> QPushButton:
@@ -3454,6 +3597,13 @@ class NativeDashboard(QWidget):
         self.alert_title.setMinimumHeight(title_height)
         self.alert_title.setMaximumHeight(title_height)
 
+    def sync_alert_title(self) -> None:
+        """应用告警标题设置，并在关闭标题时释放对应布局空间。"""
+        title = resolved_alert_title(self._settings)
+        self.alert_title.setText(title)
+        self.alert_title.setVisible(bool(title))
+        self._sync_alert_title_font()
+
     def _sync_status_density(self) -> None:
         """在低矮监测区域中同步缩放状态元素，避免图文相互覆盖。"""
         monitor_height = self.monitor_stack.height()
@@ -3493,6 +3643,7 @@ class NativeDashboard(QWidget):
     ) -> None:
         """在主页面中显示与 Web 端一致的告警内容。"""
         self.set_alert_display_mode(mode)
+        self.sync_alert_title()
         people_text = (
             f"检测到 {max(people_count, 1)} 人进入"
         )
@@ -4171,6 +4322,8 @@ class MainWindow(QMainWindow):
         dialog.activateWindow()
 
     def _on_alert_settings_changed(self) -> None:
+        self._popup.sync_alert_title()
+        self._dashboard.sync_alert_title()
         self._on_alert_display_mode_changed(
             normalize_alert_display_mode(
                 self._settings.value("alert/display_mode", "zoom")
@@ -4919,6 +5072,15 @@ class MainWindow(QMainWindow):
                 color: {colors["text"]};
                 font-size: 19px;
                 font-weight: 800;
+            }}
+            #dialogSubsectionTitle {{
+                color: {colors["text"]};
+                font-size: 15px;
+                font-weight: 800;
+            }}
+            #alertSettingsScrollArea, #alertSettingsContent {{
+                background: transparent;
+                border: none;
             }}
             #dialogDescription {{
                 color: {colors["muted"]};

@@ -633,7 +633,7 @@ class NativeDashboardTests(unittest.TestCase):
             popup.set_countdown_text("10 秒后退出告警")
             self.assertEqual(
                 popup._title.text(),
-                "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️",
+                "⚠️⚠️⚠️警告⚠️⚠️⚠️",
             )
             self.assertIs(popup._title.parent(), popup)
             self.assertIs(popup._detail.parent(), popup._image)
@@ -654,6 +654,17 @@ class NativeDashboardTests(unittest.TestCase):
             popup.show_placement_preview()
             self.assertEqual(popup._title.text(), "弹窗位置")
             self.assertTrue(popup._always_on_top_toggle.isVisible())
+            placement_button_style = (
+                popup.styleSheet()
+                .split("#mainAlertExitButton {", 1)[1]
+                .split("}", 1)[0]
+            )
+            self.assertIn("color: #a50012;", placement_button_style)
+            self.assertIn("background: #ffffff;", placement_button_style)
+            self.assertIn(
+                "#mainAlertExitButton:hover { background: #ffe5e8; }",
+                popup.styleSheet(),
+            )
             self.assertIs(
                 popup._always_on_top_toggle.parent(),
                 popup._image,
@@ -707,7 +718,7 @@ class NativeDashboardTests(unittest.TestCase):
             )
             self.assertEqual(
                 dashboard.alert_title.text(),
-                "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️",
+                "⚠️⚠️⚠️警告⚠️⚠️⚠️",
             )
             self.assertIn("检测到 2 人", dashboard.alert_detail.text())
             self.assertIs(
@@ -1054,6 +1065,24 @@ class NativeDashboardTests(unittest.TestCase):
                 dialog.alert_display_mode.minimumWidth(),
                 240,
             )
+            self.assertEqual(
+                [
+                    dialog.alert_title_mode.itemData(index)
+                    for index in range(dialog.alert_title_mode.count())
+                ],
+                ["default", "off", "custom"],
+            )
+            self.assertEqual(
+                dialog.alert_title_mode.currentData(),
+                "default",
+            )
+            self.assertEqual(
+                dialog.alert_title_mode.itemText(
+                    dialog.alert_title_mode.findData("off")
+                ),
+                "关闭标题",
+            )
+            self.assertTrue(dialog.alert_custom_title.isHidden())
             self.assertEqual(dialog.auto_exit_seconds.currentData(), 10)
             self.assertEqual(dialog.rearm_delay_seconds.currentData(), 0)
             self.assertTrue(dialog.confirm_custom_seconds.isHidden())
@@ -1264,6 +1293,48 @@ class NativeDashboardTests(unittest.TestCase):
                 75,
             )
 
+    def test_alert_title_modes_are_saved_and_applied(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            dialog = AlertSettingsDialog(settings)
+            dialog.alert_title_mode.setCurrentIndex(
+                dialog.alert_title_mode.findData("custom")
+            )
+            self.assertFalse(dialog.alert_custom_title.isHidden())
+            dialog.alert_custom_title.setText("请立即查看监控")
+            dialog._save()
+
+            self.assertEqual(
+                settings.value("alert/title_mode"),
+                "custom",
+            )
+            self.assertEqual(
+                settings.value("alert/custom_title"),
+                "请立即查看监控",
+            )
+
+            popup = AlertPopup(settings)
+            popup.show_alert(1)
+            self.assertEqual(popup._title.text(), "请立即查看监控")
+            self.assertFalse(popup._title.isHidden())
+            popup.hide()
+
+            dashboard = NativeDashboard(settings)
+            dashboard.show_alert(1)
+            self.assertEqual(
+                dashboard.alert_title.text(),
+                "请立即查看监控",
+            )
+            self.assertFalse(dashboard.alert_title.isHidden())
+
+            settings.setValue("alert/title_mode", "off")
+            popup.sync_alert_title()
+            dashboard.sync_alert_title()
+            self.assertTrue(popup._title.isHidden())
+            self.assertTrue(dashboard.alert_title.isHidden())
+
     def test_custom_trigger_and_exit_times_are_saved_and_restored(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = QSettings(
@@ -1404,7 +1475,7 @@ class NativeDashboardTests(unittest.TestCase):
             self.assertNotIn("font-size: 15px;", popup.styleSheet())
             self.assertEqual(
                 popup._title.text(),
-                "⚠️⚠️⚠️ 警告 ⚠️⚠️⚠️",
+                "⚠️⚠️⚠️警告⚠️⚠️⚠️",
             )
             popup.resize(260, 240)
             popup._sync_title_font()
