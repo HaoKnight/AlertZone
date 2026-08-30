@@ -16,7 +16,9 @@ from urllib.parse import urlsplit, urlunsplit
 
 from PySide6.QtCore import (
     QByteArray,
+    QBuffer,
     QEvent,
+    QIODevice,
     QObject,
     QPoint,
     QRect,
@@ -86,13 +88,15 @@ try:
     if sys.platform != "darwin":
         raise ImportError
     import AppKit
+    import Foundation
     import objc
 except ImportError:
     AppKit = None
+    Foundation = None
     objc = None
 
 APP_NAME = "AlertZone Desktop"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 WINDOW_TITLE = f"{APP_NAME} {APP_VERSION} · ©H-Knight"
 ORGANIZATION_NAME = "AlertZone"
 DEFAULT_PORT = 8765
@@ -1106,6 +1110,331 @@ class MarqueeLabel(QLabel):
         )
 
 
+if AppKit is not None and objc is not None:
+
+    class AlertZoneNonActivatingPanel(AppKit.NSPanel):
+        """从创建开始就永远不能成为键盘焦点窗口的告警面板。"""
+
+        def canBecomeKeyWindow(self) -> bool:
+            return False
+
+        def canBecomeMainWindow(self) -> bool:
+            return False
+
+
+    class AlertZoneNativeAlertTarget(AppKit.NSObject):
+        """把原生退出按钮动作安全转回 Qt 事件循环。"""
+
+        def initWithCallback_(self, callback: Any) -> Any:
+            self = objc.super(AlertZoneNativeAlertTarget, self).init()
+            if self is not None:
+                self._callback = callback
+            return self
+
+        @objc.IBAction
+        def dismissAlert_(self, _sender: Any) -> None:
+            callback = self._callback
+            QTimer.singleShot(0, callback)
+
+
+    class AlertZoneNativeAlertContentView(AppKit.NSView):
+        """跟踪悬停区域，但永远不请求键盘焦点。"""
+
+        def initWithOwner_frame_(self, owner: Any, frame: Any) -> Any:
+            self = objc.super(
+                AlertZoneNativeAlertContentView,
+                self,
+            ).initWithFrame_(frame)
+            if self is not None:
+                self._owner = owner
+                self._tracking_area = None
+            return self
+
+        def acceptsFirstResponder(self) -> bool:
+            return False
+
+        def updateTrackingAreas(self) -> None:
+            objc.super(
+                AlertZoneNativeAlertContentView,
+                self,
+            ).updateTrackingAreas()
+            if self._tracking_area is not None:
+                self.removeTrackingArea_(self._tracking_area)
+            options = (
+                AppKit.NSTrackingMouseEnteredAndExited
+                | AppKit.NSTrackingMouseMoved
+                | AppKit.NSTrackingActiveAlways
+                | AppKit.NSTrackingInVisibleRect
+            )
+            self._tracking_area = (
+                AppKit.NSTrackingArea.alloc()
+                .initWithRect_options_owner_userInfo_(
+                    self.bounds(),
+                    options,
+                    self,
+                    None,
+                )
+            )
+            self.addTrackingArea_(self._tracking_area)
+
+        def mouseEntered_(self, event: Any) -> None:
+            self._owner.update_hover_for_event(event)
+
+        def mouseMoved_(self, event: Any) -> None:
+            self._owner.update_hover_for_event(event)
+
+        def mouseExited_(self, _event: Any) -> None:
+            self._owner.set_button_visible(False)
+
+
+class NativeMacAlertPanel:
+    """只负责显示 Qt 离屏渲染结果的原生 macOS 非激活面板。"""
+
+    def __init__(self, dismiss_callback: Any) -> None:
+        if AppKit is None or Foundation is None or objc is None:
+            raise RuntimeError("当前环境不支持原生 macOS 告警面板")
+        style_mask = (
+            getattr(AppKit, "NSWindowStyleMaskBorderless", 0)
+            | getattr(
+                AppKit,
+                "NSWindowStyleMaskNonactivatingPanel",
+                0,
+            )
+        )
+        initial_rect = AppKit.NSMakeRect(0, 0, 460, 310)
+        self._panel = (
+            AlertZoneNonActivatingPanel.alloc()
+            .initWithContentRect_styleMask_backing_defer_(
+                initial_rect,
+                style_mask,
+                AppKit.NSBackingStoreBuffered,
+                False,
+            )
+        )
+        self._content_view = (
+            AlertZoneNativeAlertContentView.alloc()
+            .initWithOwner_frame_(self, initial_rect)
+        )
+        self._image_view = AppKit.NSImageView.alloc().initWithFrame_(
+            initial_rect
+        )
+        self._image_view.setImageScaling_(
+            AppKit.NSImageScaleProportionallyUpOrDown
+        )
+        self._image_view.setImageAlignment_(AppKit.NSImageAlignCenter)
+        self._image_view.setImageFrameStyle_(AppKit.NSImageFrameNone)
+        self._image_view.setWantsLayer_(True)
+        layer = self._image_view.layer()
+        if layer is not None:
+            layer.setCornerRadius_(12.0)
+            layer.setMasksToBounds_(True)
+        self._image_view.setAutoresizingMask_(
+            AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable
+        )
+        self._content_view.addSubview_(self._image_view)
+        self._dismiss_target = (
+            AlertZoneNativeAlertTarget.alloc()
+            .initWithCallback_(dismiss_callback)
+        )
+        self._dismiss_button = AppKit.NSButton.alloc().initWithFrame_(
+            AppKit.NSMakeRect(0, 0, 120, 38)
+        )
+        self._dismiss_button.setTitle_("退出告警")
+        self._dismiss_button.setTarget_(self._dismiss_target)
+        self._dismiss_button.setAction_("dismissAlert:")
+        self._dismiss_button.setBordered_(False)
+        self._dismiss_button.setWantsLayer_(True)
+        button_layer = self._dismiss_button.layer()
+        if button_layer is not None:
+            button_layer.setBackgroundColor_(
+                AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    1.0,
+                    0.68,
+                    0.71,
+                    0.84,
+                ).CGColor()
+            )
+            button_layer.setBorderColor_(
+                AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
+                    0.72,
+                    0.08,
+                    0.13,
+                    0.92,
+                ).CGColor()
+            )
+            button_layer.setBorderWidth_(1.0)
+            button_layer.setCornerRadius_(12.0)
+            button_layer.setMasksToBounds_(True)
+        self._dismiss_button.setKeyEquivalent_("")
+        self._dismiss_button.setFocusRingType_(
+            AppKit.NSFocusRingTypeNone
+        )
+        if hasattr(self._dismiss_button, "setRefusesFirstResponder_"):
+            self._dismiss_button.setRefusesFirstResponder_(True)
+        self._dismiss_button.setHidden_(True)
+        self._content_view.addSubview_(self._dismiss_button)
+        self._panel.setContentView_(self._content_view)
+        self._panel.setOpaque_(False)
+        self._panel.setBackgroundColor_(AppKit.NSColor.clearColor())
+        self._panel.setHasShadow_(True)
+        self._panel.setHidesOnDeactivate_(False)
+        self._panel.setBecomesKeyOnlyIfNeeded_(True)
+        self._panel.setFloatingPanel_(True)
+        self._panel.setReleasedWhenClosed_(False)
+        self._panel.setExcludedFromWindowsMenu_(True)
+        self._panel.setAcceptsMouseMovedEvents_(True)
+        self._panel.setIgnoresMouseEvents_(False)
+        behavior = (
+            AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+            | AppKit.NSWindowCollectionBehaviorStationary
+        )
+        behavior |= getattr(
+            AppKit,
+            "NSWindowCollectionBehaviorCanJoinAllApplications",
+            0,
+        )
+        behavior |= getattr(
+            AppKit,
+            "NSWindowCollectionBehaviorIgnoresCycle",
+            0,
+        )
+        self._panel.setCollectionBehavior_(behavior)
+        self._image: Any | None = None
+        self._hover_rect = AppKit.NSMakeRect(0, 0, 0, 0)
+
+    @staticmethod
+    def is_supported() -> bool:
+        return (
+            sys.platform == "darwin"
+            and AppKit is not None
+            and Foundation is not None
+            and objc is not None
+            and QApplication.platformName().lower() == "cocoa"
+        )
+
+    @staticmethod
+    def _native_frame(geometry: QRect) -> Any:
+        main_screen = AppKit.NSScreen.mainScreen()
+        main_frame = main_screen.frame() if main_screen is not None else None
+        primary_top = (
+            AppKit.NSMaxY(main_frame)
+            if main_frame is not None
+            else 0
+        )
+        return AppKit.NSMakeRect(
+            geometry.x(),
+            primary_top - geometry.y() - geometry.height(),
+            max(geometry.width(), 1),
+            max(geometry.height(), 1),
+        )
+
+    def update_pixmap(self, pixmap: QPixmap) -> bool:
+        if pixmap.isNull():
+            return False
+        encoded = QByteArray()
+        buffer = QBuffer(encoded)
+        if not buffer.open(QIODevice.OpenModeFlag.WriteOnly):
+            return False
+        try:
+            if not pixmap.save(buffer, "PNG"):
+                return False
+        finally:
+            buffer.close()
+        payload = bytes(encoded)
+        data = Foundation.NSData.dataWithBytes_length_(
+            payload,
+            len(payload),
+        )
+        image = AppKit.NSImage.alloc().initWithData_(data)
+        if image is None:
+            return False
+        self._image = image
+        self._image_view.setImage_(image)
+        return True
+
+    def configure_dismiss_button(
+        self,
+        geometry: QRect,
+        content_size: QSize,
+        font_size: int,
+    ) -> None:
+        content_height = max(content_size.height(), 1)
+        button_frame = AppKit.NSMakeRect(
+            geometry.x(),
+            content_height - geometry.y() - geometry.height(),
+            max(geometry.width(), 1),
+            max(geometry.height(), 1),
+        )
+        self._dismiss_button.setFrame_(button_frame)
+        button_font = AppKit.NSFont.boldSystemFontOfSize_(
+            max(float(font_size), 11.0)
+        )
+        self._dismiss_button.setFont_(button_font)
+        self._dismiss_button.setAttributedTitle_(
+            Foundation.NSAttributedString.alloc()
+            .initWithString_attributes_(
+                "退出告警",
+                {
+                    AppKit.NSFontAttributeName: button_font,
+                    AppKit.NSForegroundColorAttributeName: (
+                        AppKit.NSColor.colorWithSRGBRed_green_blue_alpha_(
+                            0.48,
+                            0.02,
+                            0.06,
+                            1.0,
+                        )
+                    ),
+                },
+            )
+        )
+        content_width = max(content_size.width(), 1)
+        self._hover_rect = AppKit.NSMakeRect(
+            content_width * 0.20,
+            content_height * 0.20,
+            content_width * 0.60,
+            content_height * 0.60,
+        )
+        self.set_button_visible(False)
+
+    def set_button_visible(self, visible: bool) -> None:
+        self._dismiss_button.setHidden_(not bool(visible))
+
+    def update_hover_for_event(self, event: Any) -> None:
+        point = self._content_view.convertPoint_fromView_(
+            event.locationInWindow(),
+            None,
+        )
+        visible = bool(
+            AppKit.NSPointInRect(point, self._hover_rect)
+            or AppKit.NSPointInRect(
+                point,
+                self._dismiss_button.frame(),
+            )
+        )
+        self.set_button_visible(visible)
+
+    def show(self, geometry: QRect, always_on_top: bool) -> None:
+        self._panel.setFrame_display_(
+            self._native_frame(geometry),
+            True,
+        )
+        self._panel.setLevel_(
+            AppKit.NSStatusWindowLevel
+            if always_on_top
+            else AppKit.NSNormalWindowLevel
+        )
+        # 此调用只改变窗口排序，不改变任何应用的 key/main window。
+        self._panel.orderFrontRegardless()
+
+    def hide(self) -> None:
+        self.set_button_visible(False)
+        self._panel.orderOut_(None)
+
+    def is_visible(self) -> bool:
+        return bool(self._panel.isVisible())
+
+
 class AlertPopup(QWidget):
     """不唤醒主窗口的置顶报警小窗，也用于位置和尺寸预览。"""
 
@@ -1123,6 +1452,7 @@ class AlertPopup(QWidget):
         )
         self._settings = settings
         self._placement_mode = False
+        self._native_macos_panel: NativeMacAlertPanel | None = None
         self._always_on_top = setting_bool(
             settings,
             "popup/always_on_top",
@@ -1199,18 +1529,27 @@ class AlertPopup(QWidget):
         """应用桌面主题；具体告警配色由当前显示方式决定。"""
         self._theme = "dark" if theme == "dark" else "light"
         self._apply_visual_style()
+        self._refresh_native_macos_alert()
 
     def set_display_mode(self, mode: str) -> None:
         """立即切换小窗显示方式，使其跟随主页选择。"""
         self._display_mode = normalize_alert_display_mode(mode)
         self._image.setVisible(self._display_mode in ALERT_IMAGE_MODES)
         self._apply_visual_style()
+        self._refresh_native_macos_alert()
 
     def display_mode(self) -> str:
         return self._display_mode
 
     def is_alert_active(self) -> bool:
-        return self.isVisible() and not self._placement_mode
+        native_visible = (
+            self._native_macos_panel is not None
+            and self._native_macos_panel.is_visible()
+        )
+        return (
+            native_visible
+            or (self.isVisible() and not self._placement_mode)
+        )
 
     def _apply_visual_style(self) -> None:
         mode = self._display_mode
@@ -1347,6 +1686,79 @@ class AlertPopup(QWidget):
         self._title.setMinimumHeight(title_height)
         self._title.setMaximumHeight(title_height)
 
+    def _ensure_native_macos_panel(
+        self,
+    ) -> NativeMacAlertPanel | None:
+        if not NativeMacAlertPanel.is_supported():
+            return None
+        if self._native_macos_panel is None:
+            try:
+                self._native_macos_panel = NativeMacAlertPanel(
+                    self._accept
+                )
+            except Exception:
+                return None
+        return self._native_macos_panel
+
+    def _native_alert_pixmap(self) -> QPixmap:
+        """离屏绘制现有 Qt 告警内容，交给原生 NSPanel 显示。"""
+        self.ensurePolished()
+        current_layout = self.layout()
+        if current_layout is not None:
+            current_layout.activate()
+        self._sync_title_font()
+        self._image._position_overlays()
+        screen = QApplication.screenAt(self.geometry().center())
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        device_ratio = max(
+            float(screen.devicePixelRatio()) if screen is not None else 1.0,
+            1.0,
+        )
+        pixel_size = QSize(
+            max(round(self.width() * device_ratio), 1),
+            max(round(self.height() * device_ratio), 1),
+        )
+        snapshot = QPixmap(pixel_size)
+        snapshot.setDevicePixelRatio(device_ratio)
+        snapshot.fill(Qt.GlobalColor.transparent)
+        self.render(snapshot)
+        return snapshot
+
+    def _refresh_native_macos_alert(self) -> None:
+        panel = self._native_macos_panel
+        if panel is None or not panel.is_visible():
+            return
+        panel.update_pixmap(self._native_alert_pixmap())
+
+    def _show_native_macos_alert(self) -> bool:
+        panel = self._ensure_native_macos_panel()
+        if panel is None:
+            return False
+        # 绝不调用 QWidget.show()；Qt 窗口只作为隐藏的绘图表面。
+        super().hide()
+        if not panel.update_pixmap(self._native_alert_pixmap()):
+            return False
+        button_origin = self._image.exit_button.mapTo(
+            self,
+            QPoint(0, 0),
+        )
+        button_geometry = QRect(
+            button_origin,
+            self._image.exit_button.size(),
+        )
+        button_font = self._image.exit_button.font()
+        button_font_size = button_font.pixelSize()
+        if button_font_size <= 0:
+            button_font_size = max(round(button_font.pointSizeF()), 11)
+        panel.configure_dismiss_button(
+            button_geometry,
+            self.size(),
+            button_font_size,
+        )
+        panel.show(self.geometry(), self._always_on_top)
+        return True
+
     def _position_placement_option(self) -> None:
         """将位置设置开关固定在预览画面的左上角。"""
         if not self._always_on_top_toggle.isVisible():
@@ -1384,6 +1796,15 @@ class AlertPopup(QWidget):
             Qt.WindowType.WindowStaysOnTopHint,
             self._always_on_top,
         )
+        if (
+            self._native_macos_panel is not None
+            and self._native_macos_panel.is_visible()
+        ):
+            self._native_macos_panel.show(
+                self.geometry(),
+                self._always_on_top,
+            )
+            return
         if was_visible:
             self.show()
             if not self._configure_macos_overlay():
@@ -1447,6 +1868,8 @@ class AlertPopup(QWidget):
             )
 
     def show_placement_preview(self) -> None:
+        if self._native_macos_panel is not None:
+            self._native_macos_panel.hide()
         self._placement_mode = True
         self.set_display_mode(
             normalize_alert_display_mode(
@@ -1496,6 +1919,11 @@ class AlertPopup(QWidget):
             if self._display_mode in ALERT_LIVE_MODES
             else "正在获取报警截图…"
         )
+        if NativeMacAlertPanel.is_supported():
+            # Cocoa 环境只允许走原生非激活面板。创建失败时宁可保留声音
+            # 告警，也不能退回可能抢夺用户输入焦点的 Qt 顶层窗口。
+            self._show_native_macos_alert()
+            return
         self.show()
         if not self._configure_macos_overlay():
             self.raise_()
@@ -1503,11 +1931,18 @@ class AlertPopup(QWidget):
     def set_event_image(self, image_data: bytes) -> None:
         if not self._image.set_image_data(image_data):
             self._image.clear_image("报警截图不可用")
+        self._refresh_native_macos_alert()
 
     def set_countdown_text(self, text: str) -> None:
         self._image.set_countdown_text(
             "" if self._placement_mode else text
         )
+        self._refresh_native_macos_alert()
+
+    def hide(self) -> None:
+        if self._native_macos_panel is not None:
+            self._native_macos_panel.hide()
+        super().hide()
 
     def _accept(self) -> None:
         if self._placement_mode:

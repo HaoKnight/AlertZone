@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "AlertZone Desktop"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 ROOT_DIR = Path(__file__).resolve().parent
 ENTRY_FILE = ROOT_DIR / "start.py"
 ICON_DIR = ROOT_DIR / "icon"

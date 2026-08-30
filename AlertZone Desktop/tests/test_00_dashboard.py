@@ -1459,6 +1459,27 @@ class NativeDashboardTests(unittest.TestCase):
                 )
             )
 
+    def test_macos_alert_uses_native_panel_without_showing_qt_window(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            settings = QSettings(
+                f"{temp_dir}/settings.ini", QSettings.Format.IniFormat
+            )
+            popup = AlertPopup(settings)
+            with patch(
+                "src.AlertZone_Desktop.NativeMacAlertPanel.is_supported",
+                return_value=True,
+            ), patch.object(
+                popup,
+                "_show_native_macos_alert",
+                return_value=True,
+            ) as show_native:
+                popup.show_alert(1)
+
+            show_native.assert_called_once_with()
+            self.assertFalse(popup.isVisible())
+
     def test_macos_popup_joins_all_spaces_without_activation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             settings = QSettings(
