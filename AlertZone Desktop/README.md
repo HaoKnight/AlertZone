@@ -137,7 +137,7 @@ python start.py
 
 Desktop 使用 PyInstaller 生成独立应用。PyInstaller 不支持跨平台打包：
 Windows 安装包必须在 Windows 上构建，macOS 应用必须在 macOS 上构建。
-当前发布版本为 **1.0.0**。`build.py` 会将该版本写入 Windows 可执行文件版本资源，
+当前发布版本为 **1.2.1**。`build.py` 会将该版本写入 Windows 可执行文件版本资源，
 以及 macOS 的 `CFBundleShortVersionString` 和 `CFBundleVersion`。
 
 ### 1. 安装打包依赖
@@ -176,7 +176,7 @@ python build.py --onedir
 - 将 `audio/audio.mp3` 软件默认提示音加入应用
 - Windows 使用 `icon.ico`
 - macOS 使用 `icon.icns`
-- 写入应用版本 `1.0.0`
+- 写入应用版本 `1.2.1`
 - 清理上一次 PyInstaller 构建缓存
 
 构建产物位于：

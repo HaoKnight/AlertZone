@@ -65,9 +65,9 @@ class NativeDashboardTests(unittest.TestCase):
     def test_main_window_title_uses_server_credit(self) -> None:
         self.assertEqual(
             WINDOW_TITLE,
-            "AlertZone Desktop 1.1.0 · ©H-Knight",
+            "AlertZone Desktop 1.2.1 · ©H-Knight",
         )
-        self.assertEqual(APP_VERSION, "1.1.0")
+        self.assertEqual(APP_VERSION, "1.2.1")
 
     def test_connection_page_cancel_button_emits_request(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

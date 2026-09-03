@@ -211,6 +211,10 @@ python src/dev_preview.py
 
 AlertZone 使用 PyInstaller 打包。PyInstaller 不是跨平台编译器：Windows 版必须在 Windows 中构建，macOS 版必须在 macOS 中构建。建议使用 64 位 Python 3.11，并先验证文件夹版，再尝试单文件版。
 
+当前 Server 发布版本为 **1.0.0**。`build.py` 会将该版本写入 Windows
+可执行文件的版本资源，以及 macOS 的 `CFBundleShortVersionString` 和
+`CFBundleVersion`。
+
 #### 自动打包（推荐）
 
 进入 `AlertZone Server` 目录并激活打包虚拟环境，然后安装依赖：
@@ -244,6 +248,7 @@ python build.py --onefile
 - `src/yolo11n.pt` 检测模型
 - `src/web/` 局域网页面
 - `icon/` 平台图标
+- 应用版本 `1.0.0`
 - Ultralytics 数据文件和包元数据
 - ByteTrack 使用的 `lapx`
 - 当前环境中的 PyTorch、OpenCV 和 PySide6

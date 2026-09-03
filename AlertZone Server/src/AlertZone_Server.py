@@ -77,6 +77,8 @@ ALERT_CONFIRM_OPTIONS_SECONDS = (0.0, 0.2, 0.5, 1.0, 2.0)
 BACKGROUND_FPS_LIMIT = 10.0
 OPERATION_STATUS_DURATION_MS = 1000
 APP_NAME = "AlertZone Server"
+APP_VERSION = "1.0.0"
+WINDOW_TITLE = f"{APP_NAME} {APP_VERSION} · ©H-Knight"
 
 # 程序图标和局域网网页都相对于脚本目录定位，源码与打包环境均可读取。
 APP_ROOT = Path(__file__).resolve().parent
@@ -2370,7 +2372,7 @@ class CameraWindow(QMainWindow):
         self._force_quit = False
         self._tray_icon: QSystemTrayIcon | None = None
         self._tray_menu: QMenu | None = None
-        self.setWindowTitle(f"{APP_NAME} · ©H-Knight")
+        self.setWindowTitle(WINDOW_TITLE)
 
         self.camera_combo = AlignedComboBox()
         # 摄像头和分辨率选择框随窗口宽度共同伸缩。
@@ -4062,6 +4064,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationDisplayName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
     if ICON_PATH.is_file():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
     window = CameraWindow()

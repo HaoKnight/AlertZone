@@ -1,4 +1,4 @@
-"""Desktop 打包版本元数据测试。"""
+"""Server 运行时与打包版本元数据测试。"""
 
 import ast
 import plistlib
@@ -11,20 +11,15 @@ import build
 
 
 class BuildVersionTests(unittest.TestCase):
-    def test_release_version_is_semantic_version(self) -> None:
-        version_parts = build.APP_VERSION.split(".")
-        self.assertEqual(len(version_parts), 3)
-        self.assertTrue(all(part.isdigit() for part in version_parts))
-        self.assertEqual(
-            build.version_tuple()[:3],
-            tuple(int(part) for part in version_parts),
-        )
+    def test_release_version_is_1_0_0(self) -> None:
+        self.assertEqual(build.APP_VERSION, "1.0.0")
+        self.assertEqual(build.version_tuple(), (1, 0, 0, 0))
 
     def test_runtime_version_matches_build_version(self) -> None:
-        source_path = build.ROOT_DIR / "src" / "AlertZone_Desktop.py"
-        module = ast.parse(source_path.read_text(encoding="utf-8"))
+        source_file = build.SOURCE_DIR / "AlertZone_Server.py"
+        syntax_tree = ast.parse(source_file.read_text(encoding="utf-8"))
         runtime_version = None
-        for statement in module.body:
+        for statement in syntax_tree.body:
             if not isinstance(statement, ast.Assign):
                 continue
             if any(
@@ -62,7 +57,7 @@ class BuildVersionTests(unittest.TestCase):
 
     def test_macos_bundle_version_is_written_to_plist(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            app_path = Path(temp_dir) / "AlertZone Desktop.app"
+            app_path = Path(temp_dir) / "AlertZone Server.app"
             contents_path = app_path / "Contents"
             contents_path.mkdir(parents=True)
             plist_path = contents_path / "Info.plist"

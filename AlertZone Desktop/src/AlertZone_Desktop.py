@@ -5478,6 +5478,7 @@ def main() -> int:
     QApplication.setOrganizationName(ORGANIZATION_NAME)
     QApplication.setApplicationName(APP_NAME)
     app = QApplication(sys.argv)
+    app.setApplicationVersion(APP_VERSION)
     app.setQuitOnLastWindowClosed(False)
     icon_path = app_icon_path()
     if icon_path is not None:
